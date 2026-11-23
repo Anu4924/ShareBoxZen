@@ -3,13 +3,16 @@ package com.shareboxzen.app;
 import android.Manifest;
 import android.app.Activity;
 import android.app.DownloadManager;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
@@ -285,7 +288,49 @@ public class MainActivity extends Activity implements DownloadListener {
 
         @Override
         public void run() {
-            activity.enqueueDownload(url, null, null, mimeType, fileName);
+            String targetUrl = url;
+            if (targetUrl != null && targetUrl.startsWith("/")) {
+                targetUrl = "https://shareboxzen.onrender.com" + targetUrl;
+            }
+            activity.enqueueDownload(targetUrl, null, null, mimeType, fileName);
+        }
+    }
+
+    public static class DownloadCompleteReceiver extends BroadcastReceiver {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent != null && DownloadManager.ACTION_DOWNLOAD_COMPLETE.equals(intent.getAction())) {
+                long downloadId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
+                if (downloadId != -1) {
+                    try {
+                        DownloadManager dm = (DownloadManager) context.getSystemService(Context.DOWNLOAD_SERVICE);
+                        if (dm != null) {
+                            DownloadManager.Query query = new DownloadManager.Query();
+                            query.setFilterById(downloadId);
+                            Cursor cursor = dm.query(query);
+                            if (cursor != null) {
+                                if (cursor.moveToFirst()) {
+                                    int statusIdx = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
+                                    if (statusIdx != -1 && cursor.getInt(statusIdx) == DownloadManager.STATUS_SUCCESSFUL) {
+                                        int uriIdx = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI);
+                                        if (uriIdx != -1) {
+                                            String localUriStr = cursor.getString(uriIdx);
+                                            if (localUriStr != null) {
+                                                Uri localUri = Uri.parse(localUriStr);
+                                                String filePath = localUri.getPath();
+                                                if (filePath != null) {
+                                                    MediaScannerConnection.scanFile(context, new String[]{filePath}, null, null);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                cursor.close();
+                            }
+                        }
+                    } catch (Exception ignored) {}
+                }
+            }
         }
     }
 
@@ -430,6 +475,14 @@ public class MainActivity extends Activity implements DownloadListener {
         setupClients();
         requestAppPermissions();
 
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(new DownloadCompleteReceiver(), new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                registerReceiver(new DownloadCompleteReceiver(), new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
+            }
+        } catch (Exception ignored) {}
+
         Intent intent = getIntent();
         Uri data = intent != null ? intent.getData() : null;
         if (data != null) {
@@ -474,13 +527,17 @@ public class MainActivity extends Activity implements DownloadListener {
                     : URLUtil.guessFileName(url, contentDisposition, mimetype);
 
             DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-            if (mimetype != null && !mimetype.isEmpty()) request.setMimeType(mimetype);
+            String cleanMime = (mimetype != null && !mimetype.isEmpty()) ? mimetype : "application/octet-stream";
+            request.setMimeType(cleanMime);
             if (userAgent != null && !userAgent.isEmpty()) request.addRequestHeader("User-Agent", userAgent);
 
             request.setTitle(fileName);
             request.setDescription("ShareBoxZen Downloading...");
             request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
             request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                request.allowScanningByMediaScanner();
+            }
 
             DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
             if (dm != null) {

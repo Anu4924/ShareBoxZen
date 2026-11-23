@@ -316,13 +316,26 @@ function getLocalIPAddresses() {
   return addresses;
 }
 
+// Helper to resolve public or active server base URL (handles Render / reverse proxies cleanly)
+function getBaseUrl(req) {
+  if (req && req.headers) {
+    const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+    const host = req.headers['x-forwarded-host'] || req.headers.host;
+    if (host && !host.startsWith('localhost') && !host.startsWith('127.0.0.1')) {
+      return `${proto}://${host}`.replace(/\/+$/, '');
+    }
+  }
+  const localIps = getLocalIPAddresses();
+  const primaryIp = localIps.length > 0 ? localIps[0].address : 'localhost';
+  return `http://${primaryIp}:${PORT}`;
+}
+
 // -------------------------------------------------------------
 // REST API: Network Info & Diagnostics
 // -------------------------------------------------------------
 app.get('/api/info', async (req, res) => {
   const localIps = getLocalIPAddresses();
-  const primaryIp = localIps.length > 0 ? localIps[0].address : 'localhost';
-  const networkUrl = `http://${primaryIp}:${PORT}`;
+  const networkUrl = getBaseUrl(req);
   
   let qrDataUrl = '';
   try {
@@ -1711,9 +1724,7 @@ app.delete('/api/transfers/:id', optionalAuth, (req, res) => {
 app.get('/api/qr', async (req, res) => {
   let text = req.query.text || req.query.data || req.query.url;
   if (!text) {
-    const localIps = getLocalIPAddresses();
-    const primaryIp = localIps.length > 0 ? localIps[0].address : 'localhost';
-    text = `http://${primaryIp}:${PORT}`;
+    text = getBaseUrl(req);
   }
 
   const width = Math.min(Math.max(parseInt(req.query.width || req.query.size || '320', 10), 100), 1000);
@@ -1740,12 +1751,11 @@ app.get('/api/qr', async (req, res) => {
 
 // 2. Dedicated Instant Nearby Device Pairing QR Code
 app.get('/api/qr/nearby', async (req, res) => {
-  const localIps = getLocalIPAddresses();
-  const primaryIp = localIps.length > 0 ? localIps[0].address : 'localhost';
+  const baseUrl = getBaseUrl(req);
   const pairId = req.query.pairId || req.query.clientId || '';
   const pairUrl = pairId
-    ? `http://${primaryIp}:${PORT}/#send?mode=nearby&pair=${encodeURIComponent(pairId)}`
-    : `http://${primaryIp}:${PORT}/#send?mode=nearby`;
+    ? `${baseUrl}/#send?mode=nearby&pair=${encodeURIComponent(pairId)}`
+    : `${baseUrl}/#send?mode=nearby`;
 
   try {
     const qrBuffer = await QRCode.toBuffer(pairUrl, {
@@ -1970,10 +1980,24 @@ app.get(['/d/:id', '/download/:id', '/get/:id'], (req, res) => {
             </button>
           </div>
           <script>
-            function startDownloadWithPassword() {
+            async function startDownloadWithPassword() {
               const pw = document.getElementById('transfer-pw').value;
               if (!pw) { alert('Please enter the transfer password.'); return; }
-              window.location.href = '${downloadApiUrl}?password=' + encodeURIComponent(pw);
+              try {
+                const res = await fetch('/api/transfer/${id}/authorize-download', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ password: pw })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                  alert(data.error || 'Incorrect password.');
+                  return;
+                }
+                window.location.href = '${downloadApiUrl}?ticket=' + encodeURIComponent(data.ticket);
+              } catch (e) {
+                alert('Download authorization failed: ' + e.message);
+              }
             }
           </script>
         ` : `
@@ -2003,10 +2027,8 @@ app.get('/api/qr/transfer/:id', async (req, res) => {
   const transfer = db.transfers[id];
   if (!transfer) return res.status(404).send('Transfer not found');
 
-  const localIps = getLocalIPAddresses();
-  const wifiIp = localIps.find(i => /wi-?fi|wireless|wlan/i.test(i.interface));
-  const host = wifiIp ? wifiIp.address : (localIps.length > 0 ? localIps[0].address : 'localhost');
-  const downloadUrl = `http://${host}:${PORT}/d/${id}`;
+  const baseUrl = getBaseUrl(req);
+  const downloadUrl = `${baseUrl}/#receive?id=${id}`;
 
   try {
     const qrImage = await QRCode.toBuffer(downloadUrl, { width: 340, margin: 2, errorCorrectionLevel: 'M' });

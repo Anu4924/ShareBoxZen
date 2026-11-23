@@ -16,6 +16,16 @@ function getActiveServerHost() {
   return '';
 }
 
+function getPublicAppUrl() {
+  if (typeof window !== 'undefined' && window.location) {
+    const origin = window.location.origin;
+    if (origin && origin !== 'null' && !origin.startsWith('file:') && !origin.includes('localhost') && !origin.includes('127.0.0.1')) {
+      return origin.replace(/\/+$/, '');
+    }
+  }
+  return DEFAULT_ZEN_SERVER;
+}
+
 // Transparently route /api requests to active host when running locally inside APK
 (function() {
   const originalFetch = window.fetch;
@@ -1117,21 +1127,23 @@ async function initNetworkInfo() {
   try {
     const res = await fetch('/api/info');
     const data = await res.json();
+    const publicUrl = getPublicAppUrl();
+    const displayUrl = (window.location.protocol !== 'file:' && !window.location.hostname.includes('localhost') && !window.location.hostname.includes('127.0.0.1'))
+      ? publicUrl
+      : (data.networkUrl || publicUrl);
+
     const networkBadge = document.getElementById('network-status-text');
     if (networkBadge) {
-      networkBadge.textContent = `Online: ${data.networkUrl}`;
+      networkBadge.textContent = `Online: ${displayUrl}`;
     }
     const localUrlEl = document.getElementById('nearby-local-url');
     if (localUrlEl) {
-      localUrlEl.textContent = data.networkUrl;
+      localUrlEl.textContent = displayUrl;
     }
     const qrImg = document.getElementById('nearby-qr-image');
     if (qrImg) {
-      if (data.qrDataUrl) {
-        qrImg.src = data.qrDataUrl;
-      } else {
-        qrImg.src = `/api/qr?text=${encodeURIComponent(data.networkUrl)}&size=320`;
-      }
+      const qrApiBase = (window.location.protocol === 'file:' ? getActiveServerHost() : '');
+      qrImg.src = `${qrApiBase}/api/qr?text=${encodeURIComponent(displayUrl)}&size=320`;
     }
   } catch (err) {
     console.warn('Network info fetch error:', err);
@@ -1219,13 +1231,11 @@ function initNearbyEngine() {
       onRegistered: (myClientId) => {
         // Dynamically update the QR code to encode the exact device-to-device pairing link
         const qrImg = document.getElementById('nearby-qr-image');
-        const localUrlEl = document.getElementById('nearby-local-url');
-        const hostUrl = (localUrlEl && localUrlEl.textContent && !localUrlEl.textContent.includes('Loading')) 
-          ? localUrlEl.textContent 
-          : window.location.origin;
+        const hostUrl = getPublicAppUrl();
         const pairUrl = `${hostUrl}/#send?mode=nearby&pair=${encodeURIComponent(myClientId)}`;
         if (qrImg) {
-          qrImg.src = `/api/qr?text=${encodeURIComponent(pairUrl)}&size=320`;
+          const qrApiBase = (window.location.protocol === 'file:' ? getActiveServerHost() : '');
+          qrImg.src = `${qrApiBase}/api/qr?text=${encodeURIComponent(pairUrl)}&size=320`;
         }
       },
       onDevicesUpdated: (devices) => {
@@ -1798,21 +1808,19 @@ async function startSendFilesQueue() {
   if (lastTransferResult) {
     if (completeCard) completeCard.style.display = 'block';
 
-    const localUrlEl = document.getElementById('nearby-local-url');
-    const detectedHost = (localUrlEl && localUrlEl.textContent && !localUrlEl.textContent.includes('Loading'))
-      ? localUrlEl.textContent.trim().replace(/\/+$/, '')
-      : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-          ? (typeof DEFAULT_ZEN_SERVER !== 'undefined' ? DEFAULT_ZEN_SERVER : window.location.origin)
-          : window.location.origin);
-
-    const shareUrl = `${detectedHost}/d/${lastTransferResult.transferId}`;
+    const publicBase = getPublicAppUrl();
+    let shareUrl = `${publicBase}/#receive?id=${lastTransferResult.transferId}`;
+    if (lastTransferResult.isEncrypted && lastTransferResult.encryptionKeyHex) {
+      shareUrl += `#key=${lastTransferResult.encryptionKeyHex}`;
+    }
     
     const shareInput = document.getElementById('complete-share-link');
     if (shareInput) shareInput.value = shareUrl;
 
     const qrImg = document.getElementById('complete-qr-img');
     if (qrImg) {
-      qrImg.src = `${detectedHost}/api/qr/transfer/${lastTransferResult.transferId}?t=${Date.now()}`;
+      const qrApiBase = (window.location.protocol === 'file:' ? getActiveServerHost() : '');
+      qrImg.src = `${qrApiBase}/api/qr?text=${encodeURIComponent(shareUrl)}&size=340&t=${Date.now()}`;
     }
 
     showToast(
@@ -1833,6 +1841,50 @@ async function startSendFilesQueue() {
 // -----------------------------------------------------------------
 // SECTION 2: Receive Files Controller
 // -----------------------------------------------------------------
+let activeReceiveTransferId = null;
+let activeReceiveCryptoKey = null;
+
+function parseTransferInput(input) {
+  let cleaned = String(input || '').trim();
+  let transferId = null;
+  let token = null;
+  let key = null;
+
+  // 1. Extract decryption key if present in hash or query
+  if (cleaned.includes('key=')) {
+    const keyMatch = cleaned.match(/key=([a-fA-F0-9]+)/);
+    if (keyMatch) key = keyMatch[1];
+  }
+
+  // 2. Extract transfer ID or token from link formats
+  if (cleaned.includes('id=')) {
+    const idMatch = cleaned.match(/id=([a-zA-Z0-9_-]+)/);
+    if (idMatch) transferId = idMatch[1];
+  } else if (cleaned.includes('/d/')) {
+    const dMatch = cleaned.match(/\/d\/([a-zA-Z0-9_-]+)/);
+    if (dMatch) transferId = dMatch[1];
+  } else if (cleaned.includes('/share/') || cleaned.includes('/api/share/')) {
+    const shareMatch = cleaned.match(/\/share\/([a-zA-Z0-9_-]+)/);
+    if (shareMatch) token = shareMatch[1];
+  } else if (cleaned.includes('token=')) {
+    const tokenMatch = cleaned.match(/token=([a-zA-Z0-9_-]+)/);
+    if (tokenMatch) token = tokenMatch[1];
+  }
+
+  // 3. Fallback: Raw ID extraction
+  if (!transferId && !token) {
+    const cleanId = cleaned.split(/[?#&/]/)[0];
+    if (/^[a-zA-Z0-9_-]{8,}$/.test(cleanId)) {
+      transferId = cleanId;
+    } else {
+      const uuidMatch = cleaned.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i);
+      if (uuidMatch) transferId = uuidMatch[0];
+    }
+  }
+
+  return { transferId: transferId || cleaned, token, key };
+}
+
 function initReceiveTab() {
   const btnLookup = document.getElementById('btn-lookup-transfer');
   const inputLookup = document.getElementById('receive-transfer-id');
@@ -1863,25 +1915,24 @@ function initReceiveTab() {
   // Check URL hash on initial load
   const hash = window.location.hash;
   if (hash.startsWith('#receive')) {
-    const params = new URLSearchParams(hash.replace('#receive?', ''));
-    const id = params.get('id');
-    if (id) {
+    const parsed = parseTransferInput(hash);
+    if (parsed.transferId) {
       document.querySelector('.tab-btn[data-tab="tab-receive"]')?.click();
-      if (inputLookup) inputLookup.value = id;
-      lookupReceiveTransfer(id);
+      if (inputLookup) inputLookup.value = parsed.transferId;
+      if (parsed.key) {
+        activeReceiveCryptoKey = parsed.key;
+      }
+      lookupReceiveTransfer(hash);
     }
   }
 }
 
 async function lookupReceiveTransfer(input) {
-  let transferId = input;
-  let token = null;
-
-  if (input.includes('/#receive?id=')) {
-    transferId = input.split('id=')[1];
-  } else if (input.includes('/api/share/') || input.includes('/share/')) {
-    const parts = input.split('/share/');
-    token = parts[1].split('?')[0];
+  const parsed = parseTransferInput(input);
+  let transferId = parsed.transferId;
+  let token = parsed.token;
+  if (parsed.key) {
+    activeReceiveCryptoKey = parsed.key;
   }
 
   const detailsCard = document.getElementById('receive-details-card');
@@ -1915,10 +1966,15 @@ async function lookupReceiveTransfer(input) {
     }
 
     if (transfer && detailsCard) {
+      activeReceiveTransferId = transferId;
       detailsCard.style.display = 'block';
       document.getElementById('rec-filename').textContent = transfer.fileName;
       document.getElementById('rec-filesize').textContent = formatBytes(transfer.fileSize);
       document.getElementById('rec-status').textContent = transfer.status || 'Ready';
+
+      if (transfer.hasPassword) {
+        if (passContainer) passContainer.style.display = 'block';
+      }
 
       const downloadBtn = document.getElementById('btn-download-file');
       downloadBtn.onclick = () => {
@@ -2255,7 +2311,7 @@ function renderTransferHistoryCards() {
 
 async function executeFileDownload(id, password = null) {
   try {
-    showToast('Preparing download & checking integrity...', 'info');
+    showToast('Preparing download & checking file status...', 'info');
 
     // 1. Fetch transfer metadata
     const metaRes = await fetch(`/api/transfer/${id}/status`);
@@ -2265,13 +2321,16 @@ async function executeFileDownload(id, password = null) {
     }
     const transfer = await metaRes.json();
     const fileName = transfer.fileName || 'downloaded_file';
+    const mimeType = transfer.fileType || 'application/octet-stream';
 
     // 2. Obtain download ticket via POST body if password is required (keeps passwords out of URLs)
     let ticket = null;
     if (transfer.hasPassword) {
       const pwd = password || document.getElementById('receive-password')?.value.trim();
       if (!pwd) {
-        showToast('Password is required to download this file.', 'error');
+        const passContainer = document.getElementById('receive-password-container');
+        if (passContainer) passContainer.style.display = 'block';
+        showToast('Password is required to download this file. Please enter password above.', 'error');
         return;
       }
       const authRes = await fetch(`/api/transfer/${id}/authorize-download`, {
@@ -2287,46 +2346,60 @@ async function executeFileDownload(id, password = null) {
       ticket = authData.ticket;
     }
 
-    // 3. Fetch file payload securely
-    const headers = {};
-    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-    const downloadUrl = ticket ? `/api/transfer/${id}/download?ticket=${encodeURIComponent(ticket)}` : `/api/transfer/${id}/download`;
+    const query = ticket ? `?ticket=${encodeURIComponent(ticket)}` : '';
+    const downloadPath = `/api/transfer/${id}/download${query}`;
+    const absoluteDownloadUrl = `${getPublicAppUrl()}${downloadPath}`;
 
-    const fileRes = await fetch(downloadUrl, { headers });
+    // 3. CASE A: Unencrypted File (Direct high-speed streaming without memory overhead or CORS issues)
+    if (!transfer.isEncrypted) {
+      if (window.ShareBoxAndroid && typeof window.ShareBoxAndroid.downloadFileFromUrl === 'function') {
+        window.ShareBoxAndroid.downloadFileFromUrl(absoluteDownloadUrl, fileName, mimeType, '');
+        showToast(`✓ Starting download to My Files: ${fileName}`, 'success');
+        return;
+      }
+
+      // Standard browser download stream:
+      // Triggering direct download avoids loading entire multi-megabyte/gigabyte file into JS memory
+      // and natively handles redirects to Supabase storage CDN without CORS friction
+      const a = document.createElement('a');
+      a.href = downloadPath;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      showToast(`✓ Starting download: ${fileName}`, 'success');
+      return;
+    }
+
+    // 4. CASE B: End-to-End Encrypted File (Decrypt with client-side AES-GCM-256)
+    showToast('Decrypting file with AES-GCM-256 on device...', 'info');
+    let keyHex = activeReceiveCryptoKey;
+    if (!keyHex && window.location.hash.includes('key=')) {
+      keyHex = window.location.hash.split('key=')[1].split('&')[0];
+    }
+    if (!keyHex) {
+      keyHex = prompt('Enter the 256-bit encryption key or transfer password for this file:');
+    }
+
+    if (!keyHex) {
+      showToast('Decryption key is required.', 'error');
+      return;
+    }
+
+    // Notice: Do NOT attach Authorization header to the binary download request
+    // to prevent CORS failures when server redirects to Cloud Storage CDN
+    const fileRes = await fetch(downloadPath);
     if (!fileRes.ok) {
       showToast('Download request failed.', 'error');
       return;
     }
 
-    let fileBlob = await fileRes.blob();
+    const cipherBuf = await fileRes.arrayBuffer();
+    const cryptoKey = await ZenChunker.importKey(keyHex.trim());
+    const plainBuf = await ZenChunker.decryptBuffer(cipherBuf, cryptoKey);
+    const fileBlob = new Blob([plainBuf], { type: mimeType });
+    showToast('✓ Client-side decryption successful!', 'success');
 
-    // 4. Client-side E2EE Decryption (if file was encrypted on sender's device)
-    if (transfer.isEncrypted) {
-      showToast('Decrypting file with AES-GCM-256 on device...', 'info');
-      let keyHex = null;
-      if (window.location.hash.includes('key=')) {
-        keyHex = window.location.hash.split('key=')[1].split('&')[0];
-      }
-      if (!keyHex) {
-        keyHex = prompt('Enter the 256-bit encryption key or transfer password for this file:');
-      }
-
-      if (keyHex) {
-        try {
-          const cryptoKey = await ZenChunker.importKey(keyHex.trim());
-          const cipherBuf = await fileBlob.arrayBuffer();
-          const plainBuf = await ZenChunker.decryptBuffer(cipherBuf, cryptoKey);
-          fileBlob = new Blob([plainBuf], { type: transfer.fileType || 'application/octet-stream' });
-          showToast('✓ Client-side decryption successful!', 'success');
-        } catch (decErr) {
-          showToast('Decryption failed: Incorrect key or corrupted ciphertext.', 'error');
-          return;
-        }
-      }
-    }
-
-    // 5. Save to Android My Files / Albums (or trigger browser download)
-    const mimeType = transfer.fileType || fileBlob.type || 'application/octet-stream';
     if (window.ShareBoxAndroid && typeof window.ShareBoxAndroid.saveFileToDevice === 'function') {
       const reader = new FileReader();
       reader.onloadend = () => {
@@ -2347,9 +2420,10 @@ async function executeFileDownload(id, password = null) {
       a.click();
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 10000);
-      showToast('✓ Download complete: ' + fileName, 'success');
+      showToast('✓ Saved: ' + fileName, 'success');
     }
   } catch (err) {
+    console.error('executeFileDownload error:', err);
     showToast('Download failed: ' + err.message, 'error');
   }
 }
@@ -2359,7 +2433,8 @@ function downloadTransferFile(id) {
 }
 
 function copyTransferLink(token, id) {
-  const url = token ? `${window.location.origin}/api/share/${token}` : `${window.location.origin}/#receive?id=${id}`;
+  const base = getPublicAppUrl();
+  const url = token ? `${base}/#receive?token=${token}` : `${base}/#receive?id=${id}`;
   navigator.clipboard.writeText(url);
   showToast('Link copied to clipboard!', 'success');
 }
