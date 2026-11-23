@@ -5,6 +5,7 @@ package-lock.json
 # Local storage and temporary files
 storage/
 temp_edge/
+data/edge_profile/
 
 # Build outputs
 android/build/
