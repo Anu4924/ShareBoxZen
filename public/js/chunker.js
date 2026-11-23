@@ -80,26 +80,63 @@ class ZenChunker {
 
   async calculateFileHash(file) {
     try {
-      if (file.size > 500 * 1024 * 1024) {
-        // Fast instant fingerprint for multi-GB files (prevents browser UI lag)
-        const prefixSample = await file.slice(0, 2 * 1024 * 1024).arrayBuffer();
-        const suffixSample = await file.slice(Math.max(0, file.size - 2 * 1024 * 1024)).arrayBuffer();
-        const combined = new Uint8Array(prefixSample.byteLength + suffixSample.byteLength);
-        combined.set(new Uint8Array(prefixSample), 0);
-        combined.set(new Uint8Array(suffixSample), prefixSample.byteLength);
-        const hashBuffer = await crypto.subtle.digest('SHA-256', combined);
-        const hashArray = Array.from(new Uint8Array(hashBuffer));
-        return 'zen5g_' + hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+      // Calculate cryptographic SHA-256 hash over every single byte of the file
+      const sliceSize = 10 * 1024 * 1024; // 10MB stream buffer
+      const totalSlices = Math.ceil(file.size / sliceSize);
+      const sliceDigests = [];
+
+      for (let i = 0; i < totalSlices; i++) {
+        const start = i * sliceSize;
+        const end = Math.min(start + sliceSize, file.size);
+        const buffer = await file.slice(start, end).arrayBuffer();
+        const digest = await crypto.subtle.digest('SHA-256', buffer);
+        sliceDigests.push(new Uint8Array(digest));
       }
-      const sampleSize = Math.min(10 * 1024 * 1024, file.size);
-      const prefixSlice = await file.slice(0, sampleSize).arrayBuffer();
-      const hashBuffer = await crypto.subtle.digest('SHA-256', prefixSlice);
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+      if (sliceDigests.length === 1) {
+        return Array.from(sliceDigests[0]).map(b => b.toString(16).padStart(2, '0')).join('');
+      }
+
+      // Hash the concatenated slice digests to produce deterministic full-file root hash
+      const combined = new Uint8Array(sliceDigests.length * 32);
+      for (let i = 0; i < sliceDigests.length; i++) {
+        combined.set(sliceDigests[i], i * 32);
+      }
+      const rootBuffer = await crypto.subtle.digest('SHA-256', combined);
+      return Array.from(new Uint8Array(rootBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
     } catch (e) {
       console.error('Hash calculation error:', e);
       return 'hash_uncalculated';
     }
+  }
+
+  // Client-side authenticated AES-GCM encryption
+  static async generateKey() {
+    const raw = crypto.getRandomValues(new Uint8Array(32));
+    const cryptoKey = await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
+    const keyHex = Array.from(raw).map(b => b.toString(16).padStart(2, '0')).join('');
+    return { cryptoKey, keyHex, raw };
+  }
+
+  static async importKey(keyHex) {
+    const bytes = new Uint8Array(keyHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+    return await crypto.subtle.importKey('raw', bytes, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
+  }
+
+  static async encryptBuffer(buffer, key) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, buffer);
+    const combined = new Uint8Array(12 + ciphertext.byteLength);
+    combined.set(iv, 0);
+    combined.set(new Uint8Array(ciphertext), 12);
+    return combined;
+  }
+
+  static async decryptBuffer(combinedBuffer, key) {
+    const data = new Uint8Array(combinedBuffer);
+    const iv = data.slice(0, 12);
+    const ciphertext = data.slice(12);
+    return await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
   }
 
   async initiate(file, metadata = {}) {
@@ -116,12 +153,24 @@ class ZenChunker {
 
     const fileHash = await this.calculateFileHash(file);
 
+    // End-to-end client-side encryption (AES-GCM-256)
+    this.isEncrypted = metadata.e2ee !== false;
+    if (this.isEncrypted) {
+      const { cryptoKey, keyHex } = await ZenChunker.generateKey();
+      this.encryptionKey = cryptoKey;
+      this.encryptionKeyHex = keyHex;
+    } else {
+      this.encryptionKey = null;
+      this.encryptionKeyHex = null;
+    }
+
     const payload = {
       fileName: file.name,
       fileSize: file.size,
       chunkSize: this.chunkSize,
       totalChunks: this.totalChunks,
       fileHash,
+      isEncrypted: this.isEncrypted,
       senderId: metadata.senderId,
       recipientId: metadata.recipientId,
       isPublic: metadata.isPublic !== undefined ? metadata.isPublic : true,
@@ -248,7 +297,14 @@ class ZenChunker {
 
     const start = index * this.chunkSize;
     const end = Math.min(start + this.chunkSize, this.file.size);
-    const chunkBlob = this.file.slice(start, end);
+    let chunkPayload = this.file.slice(start, end);
+
+    // If client-side E2EE is active, encrypt the chunk before uploading
+    if (this.isEncrypted && this.encryptionKey) {
+      const rawBuffer = await chunkPayload.arrayBuffer();
+      const encryptedBytes = await ZenChunker.encryptBuffer(rawBuffer, this.encryptionKey);
+      chunkPayload = new Blob([encryptedBytes], { type: 'application/octet-stream' });
+    }
 
     const res = await fetch(`/api/transfer/${this.transferId}/chunk/${index}`, {
       method: 'POST',
@@ -256,7 +312,7 @@ class ZenChunker {
         'Content-Type': 'application/octet-stream',
         'X-Chunk-Index': index.toString()
       },
-      body: chunkBlob
+      body: chunkPayload
     });
 
     if (!res.ok) {
@@ -340,7 +396,9 @@ class ZenChunker {
           sha256: data.sha256,
           integrityVerified: data.integrityVerified,
           downloadUrl: data.downloadUrl,
-          shareToken: this.shareToken
+          shareToken: this.shareToken,
+          isEncrypted: this.isEncrypted,
+          encryptionKeyHex: this.encryptionKeyHex
         });
       } else {
         this.setState('ERROR', data.error);

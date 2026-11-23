@@ -546,7 +546,7 @@ app.post('/api/auth/register', (req, res) => {
   };
   saveDB(db);
 
-  console.log(`[Mobile OTP Gateway] 6-digit OTP for ${normalizedMobile}: ${otp}`);
+  console.log(`[Mobile OTP Gateway] 6-digit OTP generated for ${normalizedMobile}: [REDACTED]`);
 
   res.status(200).json({
     success: true,
@@ -659,7 +659,7 @@ app.post('/api/auth/resend-mobile-otp', (req, res) => {
   record.requestCount = (record.requestCount || 0) + 1;
   saveDB(db);
 
-  console.log(`[Mobile OTP Gateway] Resent 6-digit OTP for ${normalizedMobile}: ${otp}`);
+  console.log(`[Mobile OTP Gateway] Resent 6-digit OTP for ${normalizedMobile}: [REDACTED]`);
 
   res.json({
     message: 'A new 6-digit verification code has been sent.',
@@ -867,7 +867,7 @@ app.post('/api/auth/forgot-password', (req, res) => {
   };
   saveDB(db);
 
-  console.log(`[Auth] Password recovery code for ${cleanEmail}: ${recoveryCode}`);
+  console.log(`[Auth] Password recovery code generated for ${cleanEmail}: [REDACTED]`);
 
   res.json({
     message: 'Password recovery code generated. Check your email to reset your password.',
@@ -996,6 +996,8 @@ app.post('/api/transfer/init', (req, res) => {
     chunkSize = 5 * 1024 * 1024,
     totalChunks,
     fileHash,
+    isEncrypted = false,
+    maxDownloads = 0,
     senderId,
     senderName,
     senderUsername,
@@ -1082,6 +1084,9 @@ app.post('/api/transfer/init', (req, res) => {
     recipientUsername: resolvedRecipientUsername,
     recipientEmail: resolvedRecipientEmail,
     isPublic: Boolean(isPublic),
+    isEncrypted: Boolean(isEncrypted),
+    maxDownloads: Number(maxDownloads) || 0,
+    downloadCount: 0,
     hasPassword: Boolean(passwordHash),
     passwordHash,
     shareToken,
@@ -1315,9 +1320,51 @@ app.post('/api/transfer/:id/complete', async (req, res) => {
 // -------------------------------------------------------------
 // REST API: Resumable Downloads (HTTP Range Support) & Passwords
 // -------------------------------------------------------------
+app.post('/api/transfer/:id/authorize-download', (req, res) => {
+  const { id } = req.params;
+  const { password } = req.body;
+  const db = loadDB();
+  const transfer = db.transfers[id];
+
+  if (!transfer || transfer.status !== 'COMPLETED') {
+    return res.status(404).json({ error: 'Completed file not found.' });
+  }
+  if (transfer.isRevoked) {
+    return res.status(403).json({ error: 'This sharing link has been revoked by the sender.' });
+  }
+  if (transfer.expiresAt && transfer.expiresAt < Date.now()) {
+    return res.status(410).json({ error: 'This transfer link has expired.' });
+  }
+  if (transfer.maxDownloads && transfer.maxDownloads > 0 && (transfer.downloadCount || 0) >= transfer.maxDownloads) {
+    return res.status(403).json({ error: 'Maximum download limit reached for this transfer.' });
+  }
+
+  if (transfer.hasPassword && transfer.passwordHash) {
+    if (!password) {
+      return res.status(401).json({ error: 'Password required' });
+    }
+    const inputHash = crypto.createHash('sha256').update(String(password).trim()).digest('hex');
+    if (inputHash !== transfer.passwordHash) {
+      return res.status(403).json({ error: 'Invalid password' });
+    }
+  }
+
+  // Issue short-lived, single-use ticket (60s)
+  const ticket = crypto.randomBytes(24).toString('base64url');
+  db.downloadTickets = db.downloadTickets || {};
+  db.downloadTickets[ticket] = {
+    transferId: id,
+    expiresAt: Date.now() + 60 * 1000
+  };
+  saveDB(db);
+
+  res.json({ success: true, ticket });
+});
+
 app.get('/api/transfer/:id/download', (req, res) => {
   const { id } = req.params;
-  const password = req.query.password || req.headers['x-share-password'];
+  const ticket = req.query.ticket;
+  const headerPassword = req.headers['x-share-password'];
 
   const db = loadDB();
   const transfer = db.transfers[id];
@@ -1337,16 +1384,37 @@ app.get('/api/transfer/:id/download', (req, res) => {
     return res.status(404).json({ error: 'The physical file has been deleted from storage.' });
   }
 
-  // Password check
-  if (transfer.hasPassword && transfer.passwordHash) {
-    if (!password) {
-      return res.status(401).json({ error: 'Password required', passwordRequired: true });
-    }
-    const inputHash = crypto.createHash('sha256').update(password).digest('hex');
-    if (inputHash !== transfer.passwordHash) {
-      return res.status(403).json({ error: 'Invalid password' });
+  // Enforce server-side download limits
+  if (transfer.maxDownloads && transfer.maxDownloads > 0) {
+    if ((transfer.downloadCount || 0) >= transfer.maxDownloads) {
+      return res.status(403).json({ error: 'Maximum download limit reached for this transfer.' });
     }
   }
+
+  // Password / Ticket verification (passwords strictly kept out of query parameters)
+  if (transfer.hasPassword && transfer.passwordHash) {
+    let authorized = false;
+    if (ticket && db.downloadTickets && db.downloadTickets[ticket]) {
+      const t = db.downloadTickets[ticket];
+      if (t.transferId === id && t.expiresAt >= Date.now()) {
+        authorized = true;
+        delete db.downloadTickets[ticket];
+      }
+    } else if (headerPassword) {
+      const inputHash = crypto.createHash('sha256').update(String(headerPassword).trim()).digest('hex');
+      if (inputHash === transfer.passwordHash) {
+        authorized = true;
+      }
+    }
+
+    if (!authorized) {
+      return res.status(401).json({ error: 'Password required or ticket invalid/expired.', passwordRequired: true });
+    }
+  }
+
+  // Increment validated download counter
+  transfer.downloadCount = (transfer.downloadCount || 0) + 1;
+  saveDB(db);
 
   // If cloud storage URL exists, redirect directly to Supabase CDN for instant worldwide download!
   if (transfer.cloudUrl) {
@@ -2178,6 +2246,41 @@ app.get('/api/local-p2p/:id/download', (req, res) => {
     }, 20000);
   });
 });
+
+// -------------------------------------------------------------
+// Automated Retention & Expiration Cleanup Engine (Runs every 15 min)
+// -------------------------------------------------------------
+function runRetentionCleanup() {
+  const db = loadDB();
+  const now = Date.now();
+  let changed = false;
+
+  for (const id in db.transfers) {
+    const t = db.transfers[id];
+    const isExpired = t.expiresAt && t.expiresAt < now;
+    const isLimitReached = t.maxDownloads && t.maxDownloads > 0 && (t.downloadCount || 0) >= t.maxDownloads;
+    if ((isExpired || isLimitReached || t.isRevoked) && !t.fileDeleted) {
+      if (t.completedFilePath && fs.existsSync(t.completedFilePath)) {
+        try { fs.unlinkSync(t.completedFilePath); } catch (e) {}
+      }
+      t.fileDeleted = true;
+      changed = true;
+    }
+  }
+
+  // Also clean expired download tickets
+  if (db.downloadTickets) {
+    for (const ticket in db.downloadTickets) {
+      if (db.downloadTickets[ticket].expiresAt < now) {
+        delete db.downloadTickets[ticket];
+        changed = true;
+      }
+    }
+  }
+
+  if (changed) saveDB(db, true);
+}
+setInterval(runRetentionCleanup, 15 * 60 * 1000);
 
 // -------------------------------------------------------------
 // Start Server and Output Connectivity Banners

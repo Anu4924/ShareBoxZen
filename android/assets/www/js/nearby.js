@@ -396,15 +396,31 @@ class ZenNearby {
     const isMatch = !expectedHash || calculatedHash === expectedHash;
     this.onLog(`[Nearby] SHA-256 Check: ${calculatedHash.slice(0, 16)}... Match: ${isMatch}`);
 
-    // Trigger download
-    const downloadUrl = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = downloadUrl;
-    a.download = this.incomingFileMeta.name;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(downloadUrl), 10000);
+    // Trigger download & native Android album/files save
+    const fileName = this.incomingFileMeta.name;
+    const fileMime = blob.type || 'application/octet-stream';
+
+    if (window.ShareBoxAndroid && typeof window.ShareBoxAndroid.saveFileToDevice === 'function') {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        try {
+          const base64 = reader.result.split(',')[1];
+          window.ShareBoxAndroid.saveFileToDevice(base64, fileName, fileMime);
+        } catch (saveErr) {
+          console.error('[Nearby] Native save failed:', saveErr);
+        }
+      };
+      reader.readAsDataURL(blob);
+    } else {
+      const downloadUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(downloadUrl), 10000);
+    }
 
     this.onFileReceived(this.incomingFileMeta.name, blob.size, calculatedHash);
     this.receivedChunks = [];

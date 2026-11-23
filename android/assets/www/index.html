@@ -5,8 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ShareBoxZen — Hybrid P2P & Resilient Large File Transfer</title>
   
-  <!-- Supabase Cloud Engine SDK (Realtime & Cloud Storage) -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- Supabase Cloud Engine SDK (Bundled locally - Zero CDN dependence) -->
+  <script src="js/vendor/supabase.js"></script>
+  <script>
+    if (typeof window.supabase === 'undefined') {
+      console.warn('[ShareBoxZen] Local Supabase client unavailable, continuing with direct server streaming.');
+    }
+  </script>
   
   <!-- Anti-flicker theme initialization script -->
   <script>
@@ -2771,6 +2776,11 @@ select:focus {
   </script>
 </head>
 <body>
+
+  <!-- Clear Offline / Network Status Banner -->
+  <div id="offline-network-banner" style="display: none; background: #991b1b; color: #ffffff; padding: 0.65rem 1rem; text-align: center; font-size: 0.85rem; font-weight: 500; position: sticky; top: 0; z-index: 999999; box-shadow: 0 2px 8px rgba(0,0,0,0.3);">
+    ⚠️ <strong>Offline Mode (Cached Shell):</strong> Internet connection or ShareBoxZen server is required for Cloud Transfers. Nearby P2P transfers require local network signaling.
+  </div>
 
   <!-- =========================================================================
        AUTHENTICATION OVERLAY (CREATE ACCOUNT / LOGIN / VERIFICATION / RECOVERY)

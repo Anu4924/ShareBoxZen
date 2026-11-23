@@ -191,6 +191,42 @@ function showAuthView(viewName) {
 }
 window.showAuthView = showAuthView;
 
+function getStoredAuthToken() {
+  if (authToken) return authToken;
+  if (window.ShareBoxAndroidSecureStorage && typeof window.ShareBoxAndroidSecureStorage.getAuthToken === 'function') {
+    const nativeToken = window.ShareBoxAndroidSecureStorage.getAuthToken();
+    if (nativeToken) return nativeToken;
+  }
+  return localStorage.getItem('shareboxzen_auth_token') || sessionStorage.getItem('shareboxzen_auth_token_session');
+}
+
+function storeAuthToken(token, rememberMe = true) {
+  authToken = token;
+  if (window.ShareBoxAndroidSecureStorage && typeof window.ShareBoxAndroidSecureStorage.setAuthToken === 'function') {
+    window.ShareBoxAndroidSecureStorage.setAuthToken(token);
+    localStorage.removeItem('shareboxzen_auth_token');
+    sessionStorage.removeItem('shareboxzen_auth_token_session');
+    return;
+  }
+  if (rememberMe) {
+    localStorage.setItem('shareboxzen_auth_token', token);
+    localStorage.removeItem('shareboxzen_auth_token_session');
+  } else {
+    sessionStorage.setItem('shareboxzen_auth_token_session', token);
+    localStorage.removeItem('shareboxzen_auth_token');
+  }
+}
+
+function clearStoredAuthToken() {
+  authToken = null;
+  currentUser = null;
+  if (window.ShareBoxAndroidSecureStorage && typeof window.ShareBoxAndroidSecureStorage.clearAuthToken === 'function') {
+    window.ShareBoxAndroidSecureStorage.clearAuthToken();
+  }
+  localStorage.removeItem('shareboxzen_auth_token');
+  sessionStorage.removeItem('shareboxzen_auth_token_session');
+}
+
 function setAuthenticatedUser(user, token, rememberMe = true) {
   currentUser = user;
   authToken = token;
@@ -209,13 +245,7 @@ function setAuthenticatedUser(user, token, rememberMe = true) {
     overlay.style.setProperty('display', 'none', 'important');
   }
 
-  if (rememberMe) {
-    localStorage.setItem('shareboxzen_auth_token', token);
-    localStorage.removeItem('shareboxzen_auth_token_session');
-  } else {
-    sessionStorage.setItem('shareboxzen_auth_token_session', token);
-    localStorage.removeItem('shareboxzen_auth_token');
-  }
+  storeAuthToken(token, rememberMe);
   localStorage.setItem('shareboxzen_has_account', 'true');
 
   const profileBadge = document.getElementById('header-user-profile');
@@ -249,7 +279,7 @@ async function initAuthSystem() {
   const overlay = document.getElementById('auth-overlay');
   const mainContent = document.getElementById('main-app-content');
 
-  const storedToken = localStorage.getItem('shareboxzen_auth_token') || sessionStorage.getItem('shareboxzen_auth_token_session');
+  const storedToken = getStoredAuthToken();
   
   if (storedToken) {
     try {
@@ -261,8 +291,7 @@ async function initAuthSystem() {
         setAuthenticatedUser(data.user, storedToken, true);
         return;
       } else {
-        localStorage.removeItem('shareboxzen_auth_token');
-        sessionStorage.removeItem('shareboxzen_auth_token_session');
+        clearStoredAuthToken();
       }
     } catch (e) {
       console.warn('[Auth] Session check failed:', e);
@@ -1893,10 +1922,7 @@ async function lookupReceiveTransfer(input) {
 
       const downloadBtn = document.getElementById('btn-download-file');
       downloadBtn.onclick = () => {
-        const password = document.getElementById('receive-password')?.value.trim();
-        let dlUrl = `/api/transfer/${transferId}/download`;
-        if (password) dlUrl += `?password=${encodeURIComponent(password)}`;
-        window.location.href = dlUrl;
+        executeFileDownload(transferId);
       };
     }
   } catch (err) {
@@ -1999,7 +2025,7 @@ async function handleAcceptIncoming(id) {
     });
     if (res.ok) {
       showToast('Transfer accepted! Starting download...', 'success');
-      window.location.href = `/api/transfer/${id}/download`;
+      executeFileDownload(id);
       loadIncomingTransfers();
       loadTransferHistory();
     } else {
@@ -2227,8 +2253,109 @@ function renderTransferHistoryCards() {
   });
 }
 
+async function executeFileDownload(id, password = null) {
+  try {
+    showToast('Preparing download & checking integrity...', 'info');
+
+    // 1. Fetch transfer metadata
+    const metaRes = await fetch(`/api/transfer/${id}/status`);
+    if (!metaRes.ok) {
+      showToast('Transfer record not found or expired.', 'error');
+      return;
+    }
+    const transfer = await metaRes.json();
+    const fileName = transfer.fileName || 'downloaded_file';
+
+    // 2. Obtain download ticket via POST body if password is required (keeps passwords out of URLs)
+    let ticket = null;
+    if (transfer.hasPassword) {
+      const pwd = password || document.getElementById('receive-password')?.value.trim();
+      if (!pwd) {
+        showToast('Password is required to download this file.', 'error');
+        return;
+      }
+      const authRes = await fetch(`/api/transfer/${id}/authorize-download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pwd })
+      });
+      const authData = await authRes.json();
+      if (!authRes.ok) {
+        showToast(authData.error || 'Password rejected.', 'error');
+        return;
+      }
+      ticket = authData.ticket;
+    }
+
+    // 3. Fetch file payload securely
+    const headers = {};
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const downloadUrl = ticket ? `/api/transfer/${id}/download?ticket=${encodeURIComponent(ticket)}` : `/api/transfer/${id}/download`;
+
+    const fileRes = await fetch(downloadUrl, { headers });
+    if (!fileRes.ok) {
+      showToast('Download request failed.', 'error');
+      return;
+    }
+
+    let fileBlob = await fileRes.blob();
+
+    // 4. Client-side E2EE Decryption (if file was encrypted on sender's device)
+    if (transfer.isEncrypted) {
+      showToast('Decrypting file with AES-GCM-256 on device...', 'info');
+      let keyHex = null;
+      if (window.location.hash.includes('key=')) {
+        keyHex = window.location.hash.split('key=')[1].split('&')[0];
+      }
+      if (!keyHex) {
+        keyHex = prompt('Enter the 256-bit encryption key or transfer password for this file:');
+      }
+
+      if (keyHex) {
+        try {
+          const cryptoKey = await ZenChunker.importKey(keyHex.trim());
+          const cipherBuf = await fileBlob.arrayBuffer();
+          const plainBuf = await ZenChunker.decryptBuffer(cipherBuf, cryptoKey);
+          fileBlob = new Blob([plainBuf], { type: transfer.fileType || 'application/octet-stream' });
+          showToast('✓ Client-side decryption successful!', 'success');
+        } catch (decErr) {
+          showToast('Decryption failed: Incorrect key or corrupted ciphertext.', 'error');
+          return;
+        }
+      }
+    }
+
+    // 5. Save to Android My Files / Albums (or trigger browser download)
+    const mimeType = transfer.fileType || fileBlob.type || 'application/octet-stream';
+    if (window.ShareBoxAndroid && typeof window.ShareBoxAndroid.saveFileToDevice === 'function') {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        try {
+          const base64 = reader.result.split(',')[1];
+          window.ShareBoxAndroid.saveFileToDevice(base64, fileName, mimeType);
+        } catch (saveErr) {
+          console.error('Android native save error:', saveErr);
+        }
+      };
+      reader.readAsDataURL(fileBlob);
+    } else {
+      const url = URL.createObjectURL(fileBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      showToast('✓ Download complete: ' + fileName, 'success');
+    }
+  } catch (err) {
+    showToast('Download failed: ' + err.message, 'error');
+  }
+}
+
 function downloadTransferFile(id) {
-  window.location.href = `/api/transfer/${id}/download`;
+  executeFileDownload(id);
 }
 
 function copyTransferLink(token, id) {
@@ -2503,9 +2630,40 @@ function handleUrlDeepLinks() {
   }
 }
 
+function initNetworkStatusWatcher() {
+  const banner = document.getElementById('offline-network-banner');
+  if (!banner) return;
+
+  async function checkConnectivity() {
+    if (!navigator.onLine) {
+      banner.style.display = 'block';
+      banner.innerHTML = '⚠️ <strong>Offline Mode (Cached Shell):</strong> Internet connection or ShareBoxZen server is required for Cloud Transfers. Nearby P2P transfers require local network signaling.';
+      return;
+    }
+    try {
+      const res = await fetch('/api/info', { method: 'GET', cache: 'no-store' });
+      if (res.ok) {
+        banner.style.display = 'none';
+      } else {
+        banner.style.display = 'block';
+        banner.innerHTML = '⚠️ <strong>Server Connection Issue:</strong> Cloud transfers unavailable. Running from local cache.';
+      }
+    } catch (e) {
+      banner.style.display = 'block';
+      banner.innerHTML = '⚠️ <strong>Server Unreachable:</strong> Running from local cache. Connect to internet or start local ShareBoxZen server.';
+    }
+  }
+
+  window.addEventListener('online', checkConnectivity);
+  window.addEventListener('offline', checkConnectivity);
+  checkConnectivity();
+  setInterval(checkConnectivity, 30000);
+}
+
 // Global bootstrap
 document.addEventListener('DOMContentLoaded', async () => {
   initThemeSwitcher();
+  initNetworkStatusWatcher();
   initAuthSystem();
   initTabs();
   initNetworkInfo();

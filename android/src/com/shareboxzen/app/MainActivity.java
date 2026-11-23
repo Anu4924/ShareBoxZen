@@ -2,16 +2,30 @@ package com.shareboxzen.app;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.DownloadManager;
 import android.content.ClipData;
+import android.content.ContentResolver;
+import android.content.ContentValues;
+import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.MediaStore;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
+import android.util.Base64;
 import android.view.KeyEvent;
 import android.view.Window;
 import android.view.WindowManager;
+import android.webkit.DownloadListener;
+import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
+import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -21,10 +35,19 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.security.KeyStore;
 import java.util.ArrayList;
 
-public class MainActivity extends Activity {
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+
+public class MainActivity extends Activity implements DownloadListener {
 
     public static final int PERMISSION_REQUEST_CODE = 1001;
     public static final int FILE_CHOOSER_REQUEST_CODE = 2002;
@@ -53,30 +76,20 @@ public class MainActivity extends Activity {
                 String path = url.getPath();
                 if (path != null) {
                     String cleanPath = path;
-                    if (cleanPath.contains("?")) {
-                        cleanPath = cleanPath.substring(0, cleanPath.indexOf("?"));
-                    }
-                    if (cleanPath.contains("#")) {
-                        cleanPath = cleanPath.substring(0, cleanPath.indexOf("#"));
-                    }
+                    if (cleanPath.contains("?")) cleanPath = cleanPath.substring(0, cleanPath.indexOf("?"));
+                    if (cleanPath.contains("#")) cleanPath = cleanPath.substring(0, cleanPath.indexOf("#"));
                     if (cleanPath.contains("/android_asset/")) {
-                        int idx = cleanPath.indexOf("/android_asset/") + "/android_asset/".length();
-                        cleanPath = cleanPath.substring(idx);
+                        cleanPath = cleanPath.substring(cleanPath.indexOf("/android_asset/") + "/android_asset/".length());
                     }
-                    while (cleanPath.startsWith("/")) {
-                        cleanPath = cleanPath.substring(1);
-                    }
+                    while (cleanPath.startsWith("/")) cleanPath = cleanPath.substring(1);
 
-                    // 1. Try direct path (e.g. "www/index.html" or "index.html")
                     WebResourceResponse resp = tryLoadAsset(activity, cleanPath);
                     if (resp != null) return resp;
 
-                    // 2. Try with "www/" prefix (e.g. "css/style.css" -> "www/css/style.css")
                     if (!cleanPath.startsWith("www/")) {
                         resp = tryLoadAsset(activity, "www/" + cleanPath);
                         if (resp != null) return resp;
                     } else {
-                        // 3. Try without "www/" prefix (e.g. "www/css/style.css" -> "css/style.css")
                         resp = tryLoadAsset(activity, cleanPath.substring(4));
                         if (resp != null) return resp;
                     }
@@ -97,9 +110,6 @@ public class MainActivity extends Activity {
                 else if (path.endsWith(".svg")) mime = "image/svg+xml";
                 else if (path.endsWith(".json")) mime = "application/json";
                 else if (path.endsWith(".ico")) mime = "image/x-icon";
-                else if (path.endsWith(".woff2")) mime = "font/woff2";
-                else if (path.endsWith(".woff")) mime = "font/woff";
-                else if (path.endsWith(".ttf")) mime = "font/ttf";
 
                 WebResourceResponse response = new WebResourceResponse(mime, "UTF-8", is);
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -178,6 +188,231 @@ public class MainActivity extends Activity {
         }
     }
 
+    public static class SaveFileTask implements Runnable {
+        private final MainActivity activity;
+        private final String base64Data;
+        private final String fileName;
+        private final String mimeType;
+
+        public SaveFileTask(MainActivity activity, String base64Data, String fileName, String mimeType) {
+            this.activity = activity;
+            this.base64Data = base64Data;
+            this.fileName = fileName;
+            this.mimeType = mimeType;
+        }
+
+        @Override
+        public void run() {
+            try {
+                byte[] fileBytes = Base64.decode(base64Data, Base64.DEFAULT);
+                String cleanMime = (mimeType != null && !mimeType.isEmpty()) ? mimeType : "application/octet-stream";
+                boolean isImage = cleanMime.startsWith("image/");
+                boolean isVideo = cleanMime.startsWith("video/");
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ContentResolver resolver = activity.getContentResolver();
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+                    values.put(MediaStore.MediaColumns.MIME_TYPE, cleanMime);
+
+                    Uri collectionUri;
+                    if (isImage) {
+                        values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/ShareBoxZen");
+                        collectionUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+                    } else if (isVideo) {
+                        values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/ShareBoxZen");
+                        collectionUri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI;
+                    } else {
+                        values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/ShareBoxZen");
+                        collectionUri = MediaStore.Downloads.EXTERNAL_CONTENT_URI;
+                    }
+
+                    Uri savedUri = resolver.insert(collectionUri, values);
+                    if (savedUri != null) {
+                        OutputStream os = resolver.openOutputStream(savedUri);
+                        if (os != null) {
+                            try {
+                                os.write(fileBytes);
+                            } finally {
+                                os.close();
+                            }
+                        }
+                    }
+                } else {
+                    File targetDir;
+                    if (isImage) {
+                        targetDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "ShareBoxZen");
+                    } else if (isVideo) {
+                        targetDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "ShareBoxZen");
+                    } else {
+                        targetDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "ShareBoxZen");
+                    }
+                    if (!targetDir.exists()) targetDir.mkdirs();
+
+                    File targetFile = new File(targetDir, fileName);
+                    FileOutputStream fos = new FileOutputStream(targetFile);
+                    try {
+                        fos.write(fileBytes);
+                    } finally {
+                        fos.close();
+                    }
+                    MediaScannerConnection.scanFile(activity, new String[]{targetFile.getAbsolutePath()}, new String[]{cleanMime}, null);
+                }
+
+                if (isImage || isVideo) {
+                    Toast.makeText(activity, "✓ Saved to Albums/Gallery: " + fileName, Toast.LENGTH_LONG).show();
+                } else {
+                    Toast.makeText(activity, "✓ Saved to My Files / Downloads: " + fileName, Toast.LENGTH_LONG).show();
+                }
+            } catch (Exception e) {
+                Toast.makeText(activity, "Save failed: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    public static class DownloadUrlTask implements Runnable {
+        private final MainActivity activity;
+        private final String url;
+        private final String fileName;
+        private final String mimeType;
+
+        public DownloadUrlTask(MainActivity activity, String url, String fileName, String mimeType) {
+            this.activity = activity;
+            this.url = url;
+            this.fileName = fileName;
+            this.mimeType = mimeType;
+        }
+
+        @Override
+        public void run() {
+            activity.enqueueDownload(url, null, null, mimeType, fileName);
+        }
+    }
+
+    public static class NativeFileBridge {
+        private final MainActivity activity;
+
+        public NativeFileBridge(MainActivity activity) {
+            this.activity = activity;
+        }
+
+        @JavascriptInterface
+        public boolean isNativeDownloaderAvailable() {
+            return true;
+        }
+
+        @JavascriptInterface
+        public void saveFileToDevice(String base64Data, String fileName, String mimeType) {
+            if (base64Data == null || fileName == null) return;
+            activity.runOnUiThread(new SaveFileTask(activity, base64Data, fileName, mimeType));
+        }
+
+        @JavascriptInterface
+        public void downloadFileFromUrl(String url, String fileName, String mimeType, String authHeader) {
+            if (url == null) return;
+            activity.runOnUiThread(new DownloadUrlTask(activity, url, fileName, mimeType));
+        }
+    }
+
+    public static class NativeSecureStorageBridge {
+        private static final String KEY_ALIAS = "ShareBoxZenSecureAuthKey";
+        private static final String PREF_NAME = "shareboxzen_keystore_prefs";
+        private static final String PREF_TOKEN = "enc_auth_token";
+        private static final String PREF_IV = "enc_auth_iv";
+
+        private final MainActivity activity;
+
+        public NativeSecureStorageBridge(MainActivity activity) {
+            this.activity = activity;
+            ensureKey();
+        }
+
+        private void ensureKey() {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+                    keyStore.load(null);
+                    if (!keyStore.containsAlias(KEY_ALIAS)) {
+                        KeyGenerator keyGen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+                        keyGen.init(new KeyGenParameterSpec.Builder(
+                                KEY_ALIAS,
+                                KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+                                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                                .setRandomizedEncryptionRequired(true)
+                                .build());
+                        keyGen.generateKey();
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        @JavascriptInterface
+        public boolean isNativeStorageAvailable() {
+            return true;
+        }
+
+        @JavascriptInterface
+        public void setAuthToken(String token) {
+            if (token == null) return;
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+                    keyStore.load(null);
+                    SecretKey key = (SecretKey) keyStore.getKey(KEY_ALIAS, null);
+
+                    Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                    cipher.init(Cipher.ENCRYPT_MODE, key);
+                    byte[] iv = cipher.getIV();
+                    byte[] cipherBytes = cipher.doFinal(token.getBytes("UTF-8"));
+
+                    SharedPreferences prefs = activity.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+                    prefs.edit()
+                            .putString(PREF_TOKEN, Base64.encodeToString(cipherBytes, Base64.NO_WRAP))
+                            .putString(PREF_IV, Base64.encodeToString(iv, Base64.NO_WRAP))
+                            .apply();
+                } else {
+                    SharedPreferences prefs = activity.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+                    prefs.edit().putString(PREF_TOKEN, token).apply();
+                }
+            } catch (Exception ignored) {}
+        }
+
+        @JavascriptInterface
+        public String getAuthToken() {
+            try {
+                SharedPreferences prefs = activity.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+                String encToken = prefs.getString(PREF_TOKEN, null);
+                String encIv = prefs.getString(PREF_IV, null);
+                if (encToken == null) return null;
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && encIv != null) {
+                    KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+                    keyStore.load(null);
+                    SecretKey key = (SecretKey) keyStore.getKey(KEY_ALIAS, null);
+
+                    byte[] iv = Base64.decode(encIv, Base64.NO_WRAP);
+                    byte[] cipherBytes = Base64.decode(encToken, Base64.NO_WRAP);
+
+                    Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                    cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, iv));
+                    byte[] plainBytes = cipher.doFinal(cipherBytes);
+                    return new String(plainBytes, "UTF-8");
+                } else {
+                    return encToken;
+                }
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        @JavascriptInterface
+        public void clearAuthToken() {
+            SharedPreferences prefs = activity.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+            prefs.edit().clear().apply();
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -222,6 +457,39 @@ public class MainActivity extends Activity {
     private void setupClients() {
         webView.setWebViewClient(new AppWebViewClient(this));
         webView.setWebChromeClient(new AppWebChromeClient(this));
+        webView.setDownloadListener(this);
+        webView.addJavascriptInterface(new NativeFileBridge(this), "ShareBoxAndroid");
+        webView.addJavascriptInterface(new NativeSecureStorageBridge(this), "ShareBoxAndroidSecureStorage");
+    }
+
+    @Override
+    public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {
+        enqueueDownload(url, userAgent, contentDisposition, mimetype, null);
+    }
+
+    public void enqueueDownload(String url, String userAgent, String contentDisposition, String mimetype, String customFileName) {
+        try {
+            String fileName = (customFileName != null && !customFileName.isEmpty())
+                    ? customFileName
+                    : URLUtil.guessFileName(url, contentDisposition, mimetype);
+
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+            if (mimetype != null && !mimetype.isEmpty()) request.setMimeType(mimetype);
+            if (userAgent != null && !userAgent.isEmpty()) request.addRequestHeader("User-Agent", userAgent);
+
+            request.setTitle(fileName);
+            request.setDescription("ShareBoxZen Downloading...");
+            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
+
+            DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+            if (dm != null) {
+                dm.enqueue(request);
+                Toast.makeText(this, "Downloading to My Files: " + fileName, Toast.LENGTH_SHORT).show();
+            }
+        } catch (Exception e) {
+            Toast.makeText(this, "Download error: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override
@@ -233,7 +501,7 @@ public class MainActivity extends Activity {
             if (resultCode == Activity.RESULT_OK && data != null) {
                 ClipData clipData = data.getClipData();
                 if (clipData != null) {
-                    ArrayList<Uri> uris = new ArrayList<Uri>();
+                    ArrayList<Uri> uris = new ArrayList<>();
                     for (int i = 0; i < clipData.getItemCount(); i++) {
                         uris.add(clipData.getItemAt(i).getUri());
                     }
@@ -251,13 +519,23 @@ public class MainActivity extends Activity {
 
     private void requestAppPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            ArrayList<String> perms = new ArrayList<String>();
+            ArrayList<String> perms = new ArrayList<>();
             if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
                 perms.add(Manifest.permission.CAMERA);
             }
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
                 if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
                     perms.add(Manifest.permission.READ_EXTERNAL_STORAGE);
+                }
+                if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                    perms.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+                }
+            } else {
+                if (checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) != PackageManager.PERMISSION_GRANTED) {
+                    perms.add(Manifest.permission.READ_MEDIA_IMAGES);
+                }
+                if (checkSelfPermission(Manifest.permission.READ_MEDIA_VIDEO) != PackageManager.PERMISSION_GRANTED) {
+                    perms.add(Manifest.permission.READ_MEDIA_VIDEO);
                 }
             }
             if (!perms.isEmpty()) {

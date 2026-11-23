@@ -1,9 +1,10 @@
 // ShareBoxZen Lightweight Offline Service Worker
-const CACHE_NAME = 'shareboxzen-v1.0.3';
+const CACHE_NAME = 'shareboxzen-v1.0.4';
 const PRECACHE_URLS = [
   '/',
   '/index.html',
   '/css/style.css',
+  '/js/vendor/supabase.js',
   '/js/chunker.js',
   '/js/nearby.js',
   '/js/app.js',
