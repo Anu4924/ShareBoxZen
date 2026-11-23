@@ -6,7 +6,7 @@
 // -----------------------------------------------------------------
 // Android APK / Web Hybrid Network Resolver
 // -----------------------------------------------------------------
-const DEFAULT_ZEN_SERVER = 'http://172.31.91.45:3000';
+const DEFAULT_ZEN_SERVER = 'https://shareboxzen.onrender.com';
 
 function getActiveServerHost() {
   if (window.location.protocol === 'file:') {

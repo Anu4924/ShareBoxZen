@@ -116,7 +116,11 @@ public class MainActivity extends Activity {
 
         @Override
         public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
-            super.onReceivedError(view, errorCode, description, failingUrl);
+            if (failingUrl != null && failingUrl.startsWith("http")) {
+                view.loadUrl("file:///android_asset/www/index.html");
+            } else {
+                super.onReceivedError(view, errorCode, description, failingUrl);
+            }
         }
     }
 
@@ -196,14 +200,7 @@ public class MainActivity extends Activity {
         if (data != null) {
             webView.loadUrl(data.toString());
         } else {
-            String targetUrl = "file:///android_asset/www/index.html";
-            try {
-                String[] list = getAssets().list("www");
-                if (list == null || list.length == 0) {
-                    targetUrl = "file:///android_asset/index.html";
-                }
-            } catch (Exception ignored) {}
-            webView.loadUrl(targetUrl);
+            webView.loadUrl("https://shareboxzen.onrender.com");
         }
     }
 
