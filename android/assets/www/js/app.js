@@ -692,6 +692,10 @@ function evaluatePasswordStrength(pwd) {
 // -----------------------------------------------------------------
 
 async function handleRegisterSubmit() {
+  const submitBtn = document.getElementById('btn-submit-register');
+  const regErrEl = document.getElementById('reg-form-error');
+  if (regErrEl) { regErrEl.style.display = 'none'; regErrEl.textContent = ''; }
+
   const name = document.getElementById('reg-fullname').value.trim();
   const username = document.getElementById('reg-username').value.trim();
   const email = document.getElementById('reg-email').value.trim();
@@ -703,31 +707,51 @@ async function handleRegisterSubmit() {
   const agreedTerms = document.getElementById('reg-terms').checked;
 
   if (!agreedTerms) {
-    showToast('Please accept the Terms of Service & Privacy Policy.', 'error');
+    const msg = 'Please accept the Terms of Service & Privacy Policy.';
+    showToast(msg, 'error');
+    if (regErrEl) { regErrEl.textContent = msg; regErrEl.style.display = 'block'; }
     return;
   }
 
   if (rawPhone.length < 7) {
-    showToast('Please enter a valid mobile number.', 'error');
+    const msg = 'Please enter a valid mobile number.';
+    showToast(msg, 'error');
+    if (regErrEl) { regErrEl.textContent = msg; regErrEl.style.display = 'block'; }
+    return;
+  }
+
+  if (password.length < 6) {
+    const msg = 'Password must be at least 6 characters long.';
+    showToast(msg, 'error');
+    if (regErrEl) { regErrEl.textContent = msg; regErrEl.style.display = 'block'; }
     return;
   }
 
   if (password !== confirmPassword) {
-    showToast('Passwords do not match. Please verify.', 'error');
+    const msg = 'Passwords do not match. Please verify.';
+    showToast(msg, 'error');
+    if (regErrEl) { regErrEl.textContent = msg; regErrEl.style.display = 'block'; }
     return;
+  }
+
+  const originalBtnText = submitBtn ? submitBtn.innerHTML : 'Create Permanent Account';
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span style="display:inline-flex; align-items:center; gap:8px;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="animation:spin 0.8s linear infinite"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg> Creating Account...</span>';
   }
 
   try {
     const res = await fetch('/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, username, email, mobileNumber, password, confirmPassword, agreedTerms })
+      body: JSON.stringify({ name, username, email, countryCode: phoneCode, mobileNumber, password, confirmPassword, agreedTerms })
     });
     const data = await res.json();
 
     if (!res.ok) {
-      // Must display exact server message (e.g. mobile registered error)
-      showToast(data.error || 'Registration failed.', 'error');
+      const errMsg = data.error || 'Registration failed.';
+      showToast(errMsg, 'error');
+      if (regErrEl) { regErrEl.textContent = errMsg; regErrEl.style.display = 'block'; }
       return;
     }
 
@@ -740,21 +764,42 @@ async function handleRegisterSubmit() {
     showAuthView('verify');
     showToast('6-Digit OTP sent to your mobile. Please verify to activate.', 'info');
   } catch (err) {
-    showToast('Registration network error. Please try again.', 'error');
+    const netErr = 'Registration network error. Please try again.';
+    showToast(netErr, 'error');
+    if (regErrEl) { regErrEl.textContent = netErr; regErrEl.style.display = 'block'; }
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = originalBtnText;
+    }
   }
 }
 
 async function handleVerifySubmit() {
+  const submitBtn = document.getElementById('btn-submit-verify');
+  const verifyErrEl = document.getElementById('verify-form-error');
+  if (verifyErrEl) { verifyErrEl.style.display = 'none'; verifyErrEl.textContent = ''; }
+
   if (!pendingVerificationMobile) {
-    showToast('Mobile number missing. Please restart registration.', 'error');
+    const msg = 'Mobile number missing. Please restart registration.';
+    showToast(msg, 'error');
+    if (verifyErrEl) { verifyErrEl.textContent = msg; verifyErrEl.style.display = 'block'; }
     return;
   }
   const code = document.getElementById('verify-code-input').value.trim();
   const rememberMe = document.getElementById('verify-remember-session').checked;
 
   if (!code || code.length !== 6) {
-    showToast('Please enter the 6-digit verification code.', 'error');
+    const msg = 'Please enter the 6-digit verification code.';
+    showToast(msg, 'error');
+    if (verifyErrEl) { verifyErrEl.textContent = msg; verifyErrEl.style.display = 'block'; }
     return;
+  }
+
+  const originalBtnText = submitBtn ? submitBtn.innerHTML : 'Verify OTP & Auto-Login';
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span style="display:inline-flex; align-items:center; gap:8px;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="animation:spin 0.8s linear infinite"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg> Verifying...</span>';
   }
 
   try {
@@ -766,7 +811,9 @@ async function handleVerifySubmit() {
     const data = await res.json();
 
     if (!res.ok) {
-      showToast(data.error || 'Verification failed.', 'error');
+      const errMsg = data.error || 'Verification failed.';
+      showToast(errMsg, 'error');
+      if (verifyErrEl) { verifyErrEl.textContent = errMsg; verifyErrEl.style.display = 'block'; }
       return;
     }
 
@@ -774,18 +821,37 @@ async function handleVerifySubmit() {
     document.getElementById('auth-overlay').classList.add('hidden');
     showToast(`Account verified! Welcome to ShareBoxZen, ${data.user.name || data.user.username}!`, 'success');
   } catch (err) {
-    showToast('Verification network error.', 'error');
+    const netErr = 'Verification network error. Please try again.';
+    showToast(netErr, 'error');
+    if (verifyErrEl) { verifyErrEl.textContent = netErr; verifyErrEl.style.display = 'block'; }
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = originalBtnText;
+    }
   }
 }
 
 async function handleLoginSubmit() {
+  const submitBtn = document.getElementById('btn-submit-login');
+  const loginErrEl = document.getElementById('login-form-error');
+  if (loginErrEl) { loginErrEl.style.display = 'none'; loginErrEl.textContent = ''; }
+
   const identifier = document.getElementById('login-identifier').value.trim();
   const password = document.getElementById('login-password').value;
   const rememberMe = document.getElementById('login-remember-session').checked;
 
   if (!identifier || !password) {
-    showToast('Please enter your username, email, or mobile number and password.', 'error');
+    const msg = 'Please enter your username, email, or mobile number and password.';
+    showToast(msg, 'error');
+    if (loginErrEl) { loginErrEl.textContent = msg; loginErrEl.style.display = 'block'; }
     return;
+  }
+
+  const originalBtnText = submitBtn ? submitBtn.innerHTML : 'Sign In';
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span style="display:inline-flex; align-items:center; gap:8px;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="animation:spin 0.8s linear infinite"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg> Signing In...</span>';
   }
 
   try {
@@ -797,8 +863,9 @@ async function handleLoginSubmit() {
     const data = await res.json();
 
     if (!res.ok) {
-      // Must display exact server message e.g. "Incorrect password. Please try again."
-      showToast(data.error || 'Login failed.', 'error');
+      const errMsg = data.error || 'Login failed.';
+      showToast(errMsg, 'error');
+      if (loginErrEl) { loginErrEl.textContent = errMsg; loginErrEl.style.display = 'block'; }
       return;
     }
 
@@ -806,7 +873,14 @@ async function handleLoginSubmit() {
     document.getElementById('auth-overlay').classList.add('hidden');
     showToast(`Welcome back, ${data.user.name || data.user.username}!`, 'success');
   } catch (err) {
-    showToast('Login network error. Please check server connection.', 'error');
+    const netErr = 'Login network error. Please check server connection.';
+    showToast(netErr, 'error');
+    if (loginErrEl) { loginErrEl.textContent = netErr; loginErrEl.style.display = 'block'; }
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = originalBtnText;
+    }
   }
 }
 window.handleLoginSubmit = handleLoginSubmit;

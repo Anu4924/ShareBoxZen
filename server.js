@@ -70,20 +70,8 @@ function validatePasswordStrength(password) {
   if (!password || typeof password !== 'string') {
     return { valid: false, message: 'Password is required.' };
   }
-  if (password.length < 8) {
-    return { valid: false, message: 'Password must be at least 8 characters long.' };
-  }
-  if (!/[A-Z]/.test(password)) {
-    return { valid: false, message: 'Password must contain at least one uppercase letter.' };
-  }
-  if (!/[a-z]/.test(password)) {
-    return { valid: false, message: 'Password must contain at least one lowercase letter.' };
-  }
-  if (!/[0-9]/.test(password)) {
-    return { valid: false, message: 'Password must contain at least one number.' };
-  }
-  if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?~`]/.test(password)) {
-    return { valid: false, message: 'Password must contain at least one special character (!@#$%^&*...).' };
+  if (password.length < 6) {
+    return { valid: false, message: 'Password must be at least 6 characters long.' };
   }
   return { valid: true };
 }
@@ -100,9 +88,13 @@ function isValidUsername(username) {
 
 function normalizeMobileNumber(countryCode, rawMobile) {
   if (!rawMobile || typeof rawMobile !== 'string') return '';
-  const cleanDigits = rawMobile.replace(/\D/g, '');
+  const trimmed = rawMobile.trim();
+  if (trimmed.startsWith('+')) {
+    return '+' + trimmed.replace(/\D/g, '');
+  }
+  const cleanDigits = trimmed.replace(/\D/g, '');
   if (!cleanDigits) return '';
-  const code = (countryCode || '+1').trim().replace(/[^\d+]/g, '');
+  const code = (countryCode || '+91').trim().replace(/[^\d+]/g, '');
   const prefix = code.startsWith('+') ? code : '+' + code;
   const codeDigits = prefix.replace('+', '');
   if (cleanDigits.startsWith(codeDigits)) {

@@ -1166,10 +1166,12 @@ select:focus {
   display: flex;
   flex-direction: column;
   gap: 0.65rem;
-  z-index: 9999;
+  z-index: 1000000 !important;
+  pointer-events: none;
 }
 
 .toast {
+  pointer-events: auto;
   background-color: var(--bg-card);
   border: 1px solid var(--border-color);
   color: var(--text-main);
@@ -1592,6 +1594,7 @@ select:focus {
     left: 1rem;
     right: 1rem;
     bottom: 1rem;
+    z-index: 1000000 !important;
   }
 }
 
@@ -2836,7 +2839,7 @@ select:focus {
         <div class="form-group" style="margin-bottom: 0.5rem;">
           <label for="reg-password">Create Password</label>
           <div class="password-input-wrapper">
-            <input type="password" id="reg-password" placeholder="Min. 8 chars with uppercase, number & symbol" required autocomplete="new-password">
+            <input type="password" id="reg-password" placeholder="At least 6 characters" required autocomplete="new-password">
             <button type="button" class="toggle-password-btn" data-target="reg-password" title="Show/Hide Password">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
@@ -2878,6 +2881,8 @@ select:focus {
           <span>I agree to the <a href="javascript:void(0)" onclick="alert('ShareBoxZen Terms: Secure, end-to-end user-to-user transfers. No plaintext credentials stored.');">Terms of Service</a> &amp; <a href="javascript:void(0)" onclick="alert('ShareBoxZen Privacy Policy: Passwords hashed via scrypt. Zero analytics trackers.');">Privacy Policy</a></span>
         </label>
 
+        <div id="reg-form-error" style="display: none; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); color: #ef4444; border-radius: 8px; padding: 0.65rem 0.85rem; font-size: 0.82rem; font-weight: 500; margin-bottom: 0.85rem; text-align: center; line-height: 1.4;"></div>
+
         <button type="submit" id="btn-submit-register" class="btn" style="width: 100%; justify-content: center; padding: 0.75rem;">
           Create Permanent Account
         </button>
@@ -2916,6 +2921,8 @@ select:focus {
           <input type="checkbox" id="verify-remember-session" checked>
           <span>Remember session on this device (30 days)</span>
         </label>
+
+        <div id="verify-form-error" style="display: none; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); color: #ef4444; border-radius: 8px; padding: 0.65rem 0.85rem; font-size: 0.82rem; font-weight: 500; margin-bottom: 0.85rem; text-align: center; line-height: 1.4;"></div>
 
         <button type="submit" id="btn-submit-verify" class="btn" style="width: 100%; justify-content: center; padding: 0.75rem;">
           Verify OTP &amp; Auto-Login
@@ -2974,6 +2981,8 @@ select:focus {
           <input type="checkbox" id="login-remember-session" checked>
           <span>Remember session on this device</span>
         </label>
+
+        <div id="login-form-error" style="display: none; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); color: #ef4444; border-radius: 8px; padding: 0.65rem 0.85rem; font-size: 0.82rem; font-weight: 500; margin-bottom: 0.85rem; text-align: center; line-height: 1.4;"></div>
 
         <button type="submit" id="btn-submit-login" class="btn" style="width: 100%; justify-content: center; padding: 0.75rem;">
           Sign In

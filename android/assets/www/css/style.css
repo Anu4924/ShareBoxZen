@@ -875,10 +875,12 @@ select:focus {
   display: flex;
   flex-direction: column;
   gap: 0.65rem;
-  z-index: 9999;
+  z-index: 1000000 !important;
+  pointer-events: none;
 }
 
 .toast {
+  pointer-events: auto;
   background-color: var(--bg-card);
   border: 1px solid var(--border-color);
   color: var(--text-main);
@@ -1301,6 +1303,7 @@ select:focus {
     left: 1rem;
     right: 1rem;
     bottom: 1rem;
+    z-index: 1000000 !important;
   }
 }
 
