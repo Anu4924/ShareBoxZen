@@ -668,6 +668,25 @@ app.post('/api/auth/resend-mobile-otp', (req, res) => {
   });
 });
 
+app.post('/api/auth/dev-remove-user', (req, res) => {
+  const { identifier } = req.body;
+  if (!identifier) return res.status(400).json({ error: 'Identifier required' });
+  const db = loadDB();
+  const initialLen = db.users.length;
+  const target = String(identifier).trim().toLowerCase();
+  db.users = db.users.filter(u => 
+    u.username.toLowerCase() !== target && 
+    u.email.toLowerCase() !== target && 
+    u.mobileNumber.toLowerCase() !== target
+  );
+  if (db.mobileOtps) {
+    delete db.mobileOtps[identifier];
+    delete db.mobileOtps['+' + identifier.replace(/\D/g, '')];
+  }
+  saveDB(db, true);
+  res.json({ success: true, removedCount: initialLen - db.users.length });
+});
+
 // 5. User Login (Supports Username, Email, OR Mobile Number)
 app.post('/api/auth/login', (req, res) => {
   const { identifier, password, rememberMe } = req.body;
