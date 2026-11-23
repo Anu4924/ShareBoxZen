@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Welcome to MetaPrompt</title>
+  <link rel="icon" href="/icon48.png">
+  <script type="module" crossorigin src="/onboarding.js"></script>
+  <link rel="modulepreload" crossorigin href="/auth.UvIrtlbO.js">
+  <link rel="stylesheet" crossorigin href="/onboarding.css">
+</head>
+<body>
+  <main class="card">
+    <ol class="steps" aria-label="Setup progress">
+      <li data-dot="overview"></li>
+      <li data-dot="consent"></li>
+      <li data-dot="sign-in"></li>
+      <li data-dot="done"></li>
+    </ol>
+
+    <section data-step="overview">
+      <div class="hero">
+        <img src="/icon.svg" alt="" width="64" height="64">
+      </div>
+      <h1>Welcome to MetaPrompt</h1>
+      <p>MetaPrompt turns rough questions into expert prompts, right inside ChatGPT and Claude. To do that, it accesses the prompts you optimize and your conversations on those sites.</p>
+
+      <div class="promise">
+        <h2>Our promise</h2>
+        <ul class="points">
+          <li>No ads</li>
+          <li>Our products are trusted by over 20 million users</li>
+          <li>Privacy by design</li>
+        </ul>
+        <div id="promiseDetails" class="promise-details" hidden>
+          <p>Please note that we take great care to protect your privacy and security by:</p>
+          <ul>
+            <li>de-identifying your information whenever possible</li>
+            <li>never using your personal information to retarget you</li>
+            <li>avoiding collection of sensitive data</li>
+            <li>adhering to industry leading security practices</li>
+          </ul>
+        </div>
+        <button type="button" class="link read-more" id="readMoreButton" aria-expanded="false" aria-controls="promiseDetails">Read more</button>
+      </div>
+
+      <button type="button" class="primary" id="continueButton">Continue</button>
+    </section>
+
+    <section data-step="consent" hidden>
+      <div class="hero">
+        <img src="/icon.svg" alt="" width="64" height="64">
+      </div>
+      <h1>Before you start</h1>
+      <p class="consent-text">By entering your birth year, selecting “I AGREE”, and completing the remaining installation steps, you confirm you are 18 or older, agree to be bound by our <a class="terms-link" target="_blank" rel="noopener noreferrer">Terms of Service</a> and expressly consent to the use of your data as described in our <a class="privacy-link" target="_blank" rel="noopener noreferrer">Privacy Policy</a>, which allows Sensor Tower to use your data for commercial purposes.</p>
+
+      <div class="year-field" role="group" aria-labelledby="yearLabel">
+        <span id="yearLabel" class="year-label">Your birth year</span>
+        <div class="year">
+          <input inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Birth year, digit 1" autofocus>
+          <input inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Birth year, digit 2">
+          <input inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Birth year, digit 3">
+          <input inputmode="numeric" maxlength="1" autocomplete="off" aria-label="Birth year, digit 4">
+        </div>
+      </div>
+      <p id="yearMessage" class="year-message" role="alert" hidden></p>
+
+      <button type="button" class="primary" id="agreeButton" disabled>I AGREE</button>
+    </section>
+
+    <section data-step="sign-in" hidden>
+      <button type="button" class="skip" id="skipButton" aria-label="Skip" title="Skip">&times;</button>
+      <div class="hero">
+        <div class="demo">
+          <span class="demo-button"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 1.5l1.4 3.6a2 2 0 0 0 1.1 1.1L14 7.6l-3.5 1.4a2 2 0 0 0-1.1 1.1L8 13.6l-1.4-3.5a2 2 0 0 0-1.1-1.1L2 7.6l3.5-1.4a2 2 0 0 0 1.1-1.1L8 1.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>Optimize prompt</span>
+          <span class="demo-input">Help me write a cover letter</span>
+        </div>
+      </div>
+      <h1>Set up your account in seconds</h1>
+      <p>Sign in with Google and start optimizing right away.</p>
+      <ul class="benefits">
+        <li>Optimize any prompt on ChatGPT and Claude in one click</li>
+        <li>Keep your plan on every computer you use</li>
+        <li>Pick up where you left off if you reinstall</li>
+      </ul>
+      <div id="signInError" class="error" hidden></div>
+      <button type="button" class="google" id="googleButton">
+        <svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true">
+          <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+          <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+          <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+          <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+        </svg>
+        Continue with Google
+      </button>
+      <p id="googleHint" class="muted small center" hidden>Finish signing in in the Google window.</p>
+      <button type="button" class="link center" id="emailButton">Use email instead</button>
+      <p id="emailHint" class="muted small center" hidden>Click the MetaPrompt icon in your browser toolbar to sign in with email.</p>
+    </section>
+
+    <section data-step="done" hidden>
+      <div class="hero">
+        <div class="demo">
+          <span class="demo-button"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 1.5l1.4 3.6a2 2 0 0 0 1.1 1.1L14 7.6l-3.5 1.4a2 2 0 0 0-1.1 1.1L8 13.6l-1.4-3.5a2 2 0 0 0-1.1-1.1L2 7.6l3.5-1.4a2 2 0 0 0 1.1-1.1L8 1.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>Optimize prompt</span>
+          <span class="demo-input">Help me write a cover letter</span>
+        </div>
+      </div>
+      <h1>You're all set</h1>
+      <p>Open ChatGPT or Claude, type a prompt, and click <strong>Optimize prompt</strong> above the message box.</p>
+      <p id="signInLater" class="muted small" hidden>You can sign in any time from the MetaPrompt icon in your browser toolbar.</p>
+      <div class="actions">
+        <a class="primary" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">Open ChatGPT</a>
+        <a class="secondary" href="https://claude.ai/new" target="_blank" rel="noopener noreferrer">Open Claude</a>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

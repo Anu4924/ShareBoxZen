@@ -1,0 +1,19 @@
+2026-11-22 16:03:03.928: [INFO] CurrentProfilePath: C:\Users\anu49\Downloads\Documents\ShareBoxZen\data\edge_profile\Default
+2026-11-22 16:03:03.928: [INFO] Profiles total count: 1
+2026-11-22 16:03:03.928: [INFO] Profile: name=Profile 1 path=C:\Users\anu49\Downloads\Documents\ShareBoxZen\data\edge_profile\Default lastActive=2026-11-22T16:03:03.890Z
+2026-11-22 16:03:03.928: [INFO] LastUsedProfileDir: C:\Users\anu49\Downloads\Documents\ShareBoxZen\data\edge_profile\Default
+2026-11-22 16:03:03.928: [INFO] MostRecentlyActiveProfile: name=Profile 1 path=C:\Users\anu49\Downloads\Documents\ShareBoxZen\data\edge_profile\Default lastActive=2026-11-22T16:03:03.890Z
+2026-11-22 16:03:03.928: [INFO] OnDoneLoading sync enabled: 0
+2026-11-22 16:03:03.928: [INFO] BookmarkModelLoaded, ids_reassigned: 0
+2026-11-22 16:03:03.928: [INFO] BookmarksLoadDropped droppedNodes=0
+2026-11-22 16:03:03.928: [INFO] BookmarksSnapshot Startup total=4 bar=4 other=0 mobile=0 showBar=0 showBarNTP=1
+2026-11-22 16:03:03.994: [INFO] RecordSyncInitDuration has_sync_been_enabled: 0 state: 0
+2026-11-22 16:03:06.404: [INFO] RecordSyncInitDuration has_sync_been_enabled: 0 state: 0
+2026-11-22 16:03:06.414: [INFO] RecordSyncInitDuration has_sync_been_enabled: 0 state: 3
+2026-11-22 16:03:06.422: [INFO] Primary account changed.
+2026-11-22 16:03:06.422: [INFO] OnPrimaryAccountChanged PrimaryAccountChangeEvent::Type::kSet
+2026-11-22 16:03:06.446: [INFO] RecordSyncInitDuration has_sync_been_enabled: 0 state: 3
+2026-11-22 16:03:06.491: [INFO] RecordSyncInitDuration has_sync_been_enabled: 0 state: 3
+2026-11-22 16:03:16.568: [INFO] BookmarkNodeAdded, ABU: 0
+2026-11-22 16:03:19.061: [INFO] Sync initialization duration: 12457ms
+2026-11-22 16:03:31.840: [INFO] VisibilityChanged: 0

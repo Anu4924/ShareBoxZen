@@ -1,0 +1,39 @@
+{
+   "action": {
+      "default_popup": "src/popup.html"
+   },
+   "background": {
+      "service_worker": "background.js"
+   },
+   "content_scripts": [ {
+      "js": [ "content.js" ],
+      "matches": [ "https://chatgpt.com/*", "https://claude.ai/*" ]
+   }, {
+      "js": [ "genai-collector.js" ],
+      "matches": [ "https://chatgpt.com/*", "https://claude.ai/*" ],
+      "run_at": "document_start",
+      "world": "MAIN"
+   }, {
+      "js": [ "genai-relay.js" ],
+      "matches": [ "https://chatgpt.com/*", "https://claude.ai/*" ],
+      "run_at": "document_start"
+   } ],
+   "description": "Transform unclear questions into expert prompts. Get better AI responses from ChatGPT and Claude with one click.",
+   "host_permissions": [ "https://us-central1-metaprompt-e64e3.cloudfunctions.net/*", "https://identitytoolkit.googleapis.com/*" ],
+   "icons": {
+      "128": "icon128.png",
+      "16": "icon16.png",
+      "32": "icon32.png",
+      "48": "icon48.png"
+   },
+   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzogjgDkLbFc8BQsuoYJ4mibmjj3n3TMNIEBJlAo4PpOLcBNn0y9TECFOI1HSJxrfg8tPaSgvlXQqIW8KE09ajwTopo6l+GLK8zMvWXPUd4B8Zir+s/IjGakOMk2p+eKz1ceysMWBf6HpOlAhgFrvIbZhQvtnDUF0r6bXed9+2SeNk5j/mnKbbdNIIY9aXNtNiVCjWbXuTmR+j4AOIQCFDEnnQFrG3dliurgeNd00Zj2OZiYhZwdM7JqeFCEdKFaKDe4P37y/6PGUyx/KoVwgO+a24bl9FrD9pTdASB7YjpKuDVC2ZBc47/4vvXdh9YuNRt88prKtzbn8QeeU9m8NPQIDAQAB",
+   "manifest_version": 3,
+   "name": "MetaPrompt - AI Prompt Engineer & Optimizer for ChatGPT & Claude",
+   "permissions": [ "storage", "identity", "alarms" ],
+   "update_url": "https://clients2.google.com/service/update2/crx",
+   "version": "2.2.0",
+   "web_accessible_resources": [ {
+      "matches": [ "https://metaprompt.stayfreeapps.com/*" ],
+      "resources": [ "src/onboarding.html" ]
+   } ]
+}

@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Local storage and temporary files
+storage/
+temp_edge/
+
+# Build outputs
+android/build/
+android/build_apk.py
+
+# Large binaries (exceeds GitHub 100MB limit)
+*.zip
+*.exe
+public/*.zip
+public/*.exe
+ShareBoxZen-Server.exe
+
+# Environment & OS files
+.env
+.DS_Store
+Thumbs.db
+*.idsig
