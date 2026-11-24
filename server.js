@@ -1535,7 +1535,7 @@ app.get('/api/transfers/history', optionalAuth, (req, res) => {
   const allTransfers = Object.values(db.transfers);
 
   const enrichTransfer = (t) => {
-    const fileAvailable = Boolean(t.completedFilePath && fs.existsSync(t.completedFilePath) && !t.fileDeleted);
+    const fileAvailable = Boolean((t.cloudUrl || (t.completedFilePath && fs.existsSync(t.completedFilePath))) && !t.fileDeleted);
     return {
       id: t.id,
       fileName: t.fileName,
@@ -1619,7 +1619,7 @@ app.get('/api/transfers/incoming', optionalAuth, (req, res) => {
       status: t.status,
       hasPassword: t.hasPassword,
       accepted: Boolean(t.accepted),
-      fileAvailable: Boolean(t.completedFilePath && fs.existsSync(t.completedFilePath) && !t.fileDeleted)
+      fileAvailable: Boolean((t.cloudUrl || (t.completedFilePath && fs.existsSync(t.completedFilePath))) && !t.fileDeleted)
     }))
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
