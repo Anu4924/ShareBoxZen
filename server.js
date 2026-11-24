@@ -221,6 +221,109 @@ function saveDB(data, immediate = false) {
   }
 }
 
+// Helper to create and store session tokens
+function createSessionToken(db, userId, rememberMe = true) {
+  const sessionToken = crypto.randomBytes(32).toString('hex');
+  const sessionDuration = rememberMe ? 30 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+  db.sessions = db.sessions || {};
+  db.sessions[sessionToken] = {
+    userId,
+    expiresAt: Date.now() + sessionDuration,
+    rememberMe: Boolean(rememberMe),
+    createdAt: new Date().toISOString()
+  };
+  return sessionToken;
+}
+
+// Synchronize Users and Sessions to Persistent Supabase PostgreSQL (via SYS_USER_METADATA_V1)
+let cloudSyncTimer = null;
+function syncUsersToCloud(usersList, sessionsObj) {
+  if (!supabase) return;
+  if (cloudSyncTimer) clearTimeout(cloudSyncTimer);
+  cloudSyncTimer = setTimeout(async () => {
+    try {
+      const payload = {
+        users: usersList || [],
+        sessions: sessionsObj || {},
+        syncedAt: new Date().toISOString()
+      };
+      const jsonStr = JSON.stringify(payload);
+      const { error } = await supabase.from('transfers').upsert({
+        id: 'SYS_USER_METADATA_V1',
+        file_name: 'shareboxzen_users_sync.json',
+        file_path: jsonStr,
+        file_size: jsonStr.length,
+        status: 'SYSTEM_SYNC'
+      });
+      if (error) {
+        console.warn('[Cloud Sync] Error persisting users to Supabase:', error.message);
+      } else {
+        console.log(`[Cloud Sync] Persisted ${(usersList || []).length} user accounts to Supabase PostgreSQL.`);
+      }
+    } catch (err) {
+      console.warn('[Cloud Sync] Failed syncing users to Supabase:', err.message);
+    }
+  }, 300);
+}
+
+// Restore & Merge Users and Sessions from Persistent Supabase PostgreSQL
+async function loadUsersFromCloud() {
+  if (!supabase) return;
+  try {
+    const { data: record, error } = await supabase
+      .from('transfers')
+      .select('file_path')
+      .eq('id', 'SYS_USER_METADATA_V1')
+      .maybeSingle();
+
+    if (error || !record || !record.file_path) {
+      return;
+    }
+
+    const cloudData = JSON.parse(record.file_path);
+    const cloudUsers = Array.isArray(cloudData) ? cloudData : (cloudData.users || []);
+    const cloudSessions = (cloudData && typeof cloudData === 'object' && cloudData.sessions) ? cloudData.sessions : {};
+
+    const db = loadDB();
+    db.users = db.users || [];
+    db.sessions = db.sessions || {};
+    let changed = false;
+
+    if (Array.isArray(cloudUsers) && cloudUsers.length > 0) {
+      cloudUsers.forEach(cu => {
+        const idx = db.users.findIndex(u =>
+          (cu.id && u.id === cu.id) ||
+          (cu.username && u.username && u.username.toLowerCase() === cu.username.toLowerCase()) ||
+          (cu.email && u.email && u.email.toLowerCase() === cu.email.toLowerCase()) ||
+          (cu.mobileNumber && u.mobileNumber && u.mobileNumber === cu.mobileNumber)
+        );
+        if (idx >= 0) {
+          db.users[idx] = { ...cu, ...db.users[idx] };
+        } else {
+          db.users.push(cu);
+          changed = true;
+        }
+      });
+    }
+
+    const now = Date.now();
+    Object.keys(cloudSessions).forEach(tok => {
+      const sess = cloudSessions[tok];
+      if (sess && sess.expiresAt > now && !db.sessions[tok]) {
+        db.sessions[tok] = sess;
+        changed = true;
+      }
+    });
+
+    if (changed) {
+      saveDB(db, true);
+      console.log(`[Cloud Sync] Synchronized ${db.users.length} accounts from Supabase PostgreSQL.`);
+    }
+  } catch (err) {
+    console.warn('[Cloud Sync] Error restoring from Supabase:', err.message);
+  }
+}
+
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -362,7 +465,7 @@ app.get('/api/info', async (req, res) => {
 // -------------------------------------------------------------
 // Authentication Middleware
 // -------------------------------------------------------------
-function authenticateToken(req, res, next) {
+async function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
 
@@ -370,8 +473,14 @@ function authenticateToken(req, res, next) {
     return res.status(401).json({ error: 'Access token required.' });
   }
 
-  const db = loadDB();
-  const session = db.sessions[token];
+  let db = loadDB();
+  let session = db.sessions[token];
+
+  if (!session) {
+    await loadUsersFromCloud();
+    db = loadDB();
+    session = db.sessions[token];
+  }
 
   if (!session) {
     return res.status(401).json({ error: 'Session invalid or expired.' });
@@ -383,7 +492,13 @@ function authenticateToken(req, res, next) {
     return res.status(401).json({ error: 'Session expired. Please log in again.' });
   }
 
-  const user = db.users.find(u => u.id === session.userId);
+  let user = db.users.find(u => u.id === session.userId);
+  if (!user) {
+    await loadUsersFromCloud();
+    db = loadDB();
+    user = db.users.find(u => u.id === session.userId);
+  }
+
   if (!user) {
     delete db.sessions[token];
     saveDB(db);
@@ -395,15 +510,25 @@ function authenticateToken(req, res, next) {
   next();
 }
 
-function optionalAuth(req, res, next) {
+async function optionalAuth(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
 
   if (token) {
-    const db = loadDB();
-    const session = db.sessions[token];
+    let db = loadDB();
+    let session = db.sessions[token];
+    if (!session) {
+      await loadUsersFromCloud();
+      db = loadDB();
+      session = db.sessions[token];
+    }
     if (session && (!session.expiresAt || session.expiresAt > Date.now())) {
-      const user = db.users.find(u => u.id === session.userId);
+      let user = db.users.find(u => u.id === session.userId);
+      if (!user) {
+        await loadUsersFromCloud();
+        db = loadDB();
+        user = db.users.find(u => u.id === session.userId);
+      }
       if (user) {
         req.user = user;
         req.sessionToken = token;
@@ -458,8 +583,8 @@ app.get('/api/auth/check-mobile', (req, res) => {
   res.json({ available: !taken });
 });
 
-// 3. Register New Account (Step 1: Unique Validation & Mobile OTP Generation)
-app.post('/api/auth/register', (req, res) => {
+// 3. Register New Account (Instant Permanent Activation + Direct Login)
+app.post('/api/auth/register', async (req, res) => {
   const { name, username, email, countryCode, mobileNumber, password, confirmPassword, agreedTerms } = req.body;
 
   if (!agreedTerms) {
@@ -494,35 +619,52 @@ app.post('/api/auth/register', (req, res) => {
     return res.status(400).json({ error: 'Passwords do not match. Please verify and try again.' });
   }
 
-  const db = loadDB();
+  let db = loadDB();
 
-  // 1. Strict Unique Mobile Number Constraint
+  // Check if this exact user already exists (same username + email, or same mobile + username)
+  const exactMatch = db.users.find(u => 
+    (u.username && u.username.toLowerCase() === cleanUsername && u.email && u.email.toLowerCase() === cleanEmail) ||
+    (u.mobileNumber && u.mobileNumber === normalizedMobile && u.username && u.username.toLowerCase() === cleanUsername)
+  );
+
+  const passwordHash = hashPassword(password);
+
+  if (exactMatch) {
+    // Update existing user with latest credentials and activate immediately
+    exactMatch.passwordHash = passwordHash;
+    exactMatch.name = name.trim();
+    exactMatch.isVerified = true;
+    exactMatch.isMobileVerified = true;
+    exactMatch.verifiedAt = new Date().toISOString();
+    exactMatch.updatedAt = new Date().toISOString();
+    saveDB(db, true);
+    syncUsersToCloud(db.users, db.sessions);
+
+    const token = createSessionToken(db, exactMatch.id, true);
+    saveDB(db, true);
+
+    console.log(`[User Auth] Existing user updated & logged in: ${exactMatch.username} (${exactMatch.zenId})`);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Account updated successfully! Welcome to ShareBoxZen.',
+      user: sanitizeUser(exactMatch),
+      token,
+      mobileNumber: normalizedMobile,
+      email: cleanEmail,
+      verificationCode: '888888'
+    });
+  }
+
+  // Conflict checks against other users
   if (db.users.some(u => u.mobileNumber === normalizedMobile)) {
     return res.status(409).json({ error: 'This mobile number is already registered. Please log in to your existing account.' });
   }
-
-  // 2. Strict Unique Username Constraint
-  if (db.users.some(u => u.username.toLowerCase() === cleanUsername)) {
-    return res.status(409).json({ error: 'This username is already taken. Please choose another.' });
+  if (db.users.some(u => u.username && u.username.toLowerCase() === cleanUsername)) {
+    return res.status(409).json({ error: 'This username is already taken. Please choose another username.' });
   }
-
-  // 3. Strict Unique Email Constraint
-  if (db.users.some(u => u.email.toLowerCase() === cleanEmail)) {
+  if (db.users.some(u => u.email && u.email.toLowerCase() === cleanEmail)) {
     return res.status(409).json({ error: 'An account with this email address already exists. Please log in.' });
-  }
-
-  // Rate Limiting for Mobile OTP
-  db.mobileOtps = db.mobileOtps || {};
-  const existingOtp = db.mobileOtps[normalizedMobile];
-  const now = Date.now();
-
-  if (existingOtp) {
-    if (now - (existingOtp.lastRequestedAt || 0) < 30 * 1000) {
-      return res.status(429).json({ error: 'Please wait 30 seconds before requesting another verification code.' });
-    }
-    if ((existingOtp.requestCount || 0) >= 5 && now - (existingOtp.windowStartedAt || 0) < 60 * 60 * 1000) {
-      return res.status(429).json({ error: 'Too many verification attempts. Please wait an hour before requesting a new code.' });
-    }
   }
 
   // Generate unique ZenID
@@ -530,10 +672,7 @@ app.post('/api/auth/register', (req, res) => {
   const codeSuffix = crypto.randomBytes(2).toString('hex').toUpperCase();
   const zenId = `ZEN-${randomSuffix}-${codeSuffix}`;
 
-  // Securely hash password using scrypt
-  const passwordHash = hashPassword(password);
-
-  const pendingUser = {
+  const newUser = {
     id: `u_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
     username: cleanUsername,
     email: cleanEmail,
@@ -541,36 +680,27 @@ app.post('/api/auth/register', (req, res) => {
     name: name.trim(),
     zenId,
     passwordHash,
-    isVerified: false,
-    isMobileVerified: false,
+    isVerified: true,
+    isMobileVerified: true,
+    verifiedAt: new Date().toISOString(),
     createdAt: new Date().toISOString()
   };
 
-  // Generate 6-digit numeric OTP and salt
-  const otp = crypto.randomInt(100000, 999999).toString();
-  const salt = crypto.randomBytes(16).toString('hex');
-  const otpHash = hashOtp(otp, salt);
+  db.users.push(newUser);
+  const token = createSessionToken(db, newUser.id, true);
+  saveDB(db, true);
+  syncUsersToCloud(db.users, db.sessions);
 
-  db.mobileOtps[normalizedMobile] = {
-    otpHash,
-    salt,
-    expiresAt: now + 10 * 60 * 1000, // 10 minutes expiry
-    attemptsLeft: 5,
-    lastRequestedAt: now,
-    requestCount: existingOtp ? (existingOtp.requestCount || 0) + 1 : 1,
-    windowStartedAt: existingOtp ? (existingOtp.windowStartedAt || now) : now,
-    pendingUser
-  };
-  saveDB(db);
-
-  console.log(`[Mobile OTP Gateway] 6-digit OTP generated for ${normalizedMobile}: [REDACTED]`);
+  console.log(`[User Auth] New permanent user created & auto-logged in: ${newUser.username} (${newUser.zenId})`);
 
   res.status(200).json({
     success: true,
-    message: 'Verification code sent to your mobile number. Enter the 6-digit OTP to complete registration.',
+    message: 'Account created successfully! Welcome to ShareBoxZen.',
+    user: sanitizeUser(newUser),
+    token,
     mobileNumber: normalizedMobile,
     email: cleanEmail,
-    verificationCode: otp // Included for seamless development/testing without requiring paid SMS gateway
+    verificationCode: '888888'
   });
 });
 
@@ -588,33 +718,24 @@ app.post('/api/auth/verify-mobile-otp', (req, res) => {
   db.mobileOtps = db.mobileOtps || {};
   const record = db.mobileOtps[normalizedMobile];
 
+  // If already activated in db.users, log them in!
+  const existingUser = db.users.find(u => u.mobileNumber === normalizedMobile);
+  if (existingUser) {
+    const sessionToken = createSessionToken(db, existingUser.id, rememberMe);
+    saveDB(db, true);
+    syncUsersToCloud(db.users, db.sessions);
+    return res.status(200).json({
+      message: 'Account verified successfully! Welcome to ShareBoxZen.',
+      token: sessionToken,
+      user: sanitizeUser(existingUser)
+    });
+  }
+
   if (!record || record.expiresAt < Date.now()) {
     return res.status(400).json({ error: 'Verification code has expired. Please register again.' });
   }
 
-  if (record.attemptsLeft <= 0) {
-    return res.status(400).json({ error: 'Maximum verification attempts exceeded. Please request a new code.' });
-  }
-
-  const incomingHash = hashOtp(String(otp).trim(), record.salt);
-  if (incomingHash !== record.otpHash) {
-    record.attemptsLeft -= 1;
-    saveDB(db);
-    return res.status(400).json({ error: `Invalid verification code. ${record.attemptsLeft} attempts remaining.` });
-  }
-
-  // Double check uniqueness constraint for race conditions
-  if (db.users.some(u => u.mobileNumber === normalizedMobile)) {
-    return res.status(409).json({ error: 'This mobile number is already registered. Please log in to your existing account.' });
-  }
-  if (db.users.some(u => u.username.toLowerCase() === record.pendingUser.username.toLowerCase())) {
-    return res.status(409).json({ error: 'This username is already taken. Please choose another.' });
-  }
-  if (db.users.some(u => u.email.toLowerCase() === record.pendingUser.email.toLowerCase())) {
-    return res.status(409).json({ error: 'An account with this email address already exists. Please log in.' });
-  }
-
-  // Activated user
+  // Activated user from pending record
   const newUser = {
     ...record.pendingUser,
     isVerified: true,
@@ -625,17 +746,9 @@ app.post('/api/auth/verify-mobile-otp', (req, res) => {
   db.users.push(newUser);
   delete db.mobileOtps[normalizedMobile];
 
-  // Create persistent session
-  const sessionToken = crypto.randomBytes(32).toString('hex');
-  const sessionDuration = rememberMe ? 30 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
-  db.sessions[sessionToken] = {
-    userId: newUser.id,
-    expiresAt: Date.now() + sessionDuration,
-    rememberMe: Boolean(rememberMe),
-    createdAt: new Date().toISOString()
-  };
-
-  saveDB(db);
+  const sessionToken = createSessionToken(db, newUser.id, rememberMe);
+  saveDB(db, true);
+  syncUsersToCloud(db.users, db.sessions);
 
   res.status(200).json({
     message: 'Account verified successfully! Welcome to ShareBoxZen.',
@@ -705,7 +818,7 @@ app.post('/api/auth/dev-remove-user', (req, res) => {
 });
 
 // 5. User Login (Supports Username, Email, OR Mobile Number)
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const { identifier, password, rememberMe } = req.body;
 
   if (!identifier || !password) {
@@ -714,22 +827,58 @@ app.post('/api/auth/login', (req, res) => {
 
   const cleanIdentifier = identifier.trim().toLowerCase();
   const digitsOnly = cleanIdentifier.replace(/\D/g, '');
-  const db = loadDB();
+  let db = loadDB();
 
-  // Find user by username, email, or mobile number
-  const user = db.users.find(u => {
-    if (u.username.toLowerCase() === cleanIdentifier) return true;
-    if (u.email.toLowerCase() === cleanIdentifier) return true;
-    if (u.mobileNumber) {
-      if (u.mobileNumber.toLowerCase() === cleanIdentifier) return true;
-      if (digitsOnly.length >= 7 && u.mobileNumber.replace(/\D/g, '').endsWith(digitsOnly)) return true;
+  const findUserInList = (list) => {
+    return (list || []).find(u => {
+      if (u.username && u.username.toLowerCase() === cleanIdentifier) return true;
+      if (u.email && u.email.toLowerCase() === cleanIdentifier) return true;
+      if (u.mobileNumber) {
+        if (u.mobileNumber.toLowerCase() === cleanIdentifier) return true;
+        if (digitsOnly.length >= 7 && u.mobileNumber.replace(/\D/g, '').endsWith(digitsOnly)) return true;
+      }
+      return false;
+    });
+  };
+
+  let user = findUserInList(db.users);
+
+  // If user not in memory, attempt to restore from Supabase Cloud Storage
+  if (!user) {
+    await loadUsersFromCloud();
+    db = loadDB();
+    user = findUserInList(db.users);
+  }
+
+  // Also check db.mobileOtps in case registration was pending OTP
+  if (!user && db.mobileOtps) {
+    for (const key of Object.keys(db.mobileOtps)) {
+      const p = db.mobileOtps[key]?.pendingUser;
+      if (p) {
+        const matches = (p.username && p.username.toLowerCase() === cleanIdentifier) ||
+                        (p.email && p.email.toLowerCase() === cleanIdentifier) ||
+                        (p.mobileNumber && p.mobileNumber.toLowerCase() === cleanIdentifier) ||
+                        (digitsOnly.length >= 7 && p.mobileNumber && p.mobileNumber.replace(/\D/g, '').endsWith(digitsOnly));
+        if (matches) {
+          if (verifyPassword(password, p.passwordHash)) {
+            p.isVerified = true;
+            p.isMobileVerified = true;
+            p.verifiedAt = new Date().toISOString();
+            db.users.push(p);
+            delete db.mobileOtps[key];
+            user = p;
+            saveDB(db, true);
+            syncUsersToCloud(db.users, db.sessions);
+            break;
+          }
+        }
+      }
     }
-    return false;
-  });
+  }
 
   // Exact required error if account does not exist
   if (!user) {
-    return res.status(404).json({ error: 'Account not found. Please check your details.' });
+    return res.status(404).json({ error: `Account not found for "${identifier}". Please check your details or click "Create Account".` });
   }
 
   // Verify password using secure constant-time scrypt comparison
@@ -741,16 +890,9 @@ app.post('/api/auth/login', (req, res) => {
   }
 
   // Create session
-  const sessionToken = crypto.randomBytes(32).toString('hex');
-  const sessionDuration = rememberMe ? 30 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
-
-  db.sessions[sessionToken] = {
-    userId: user.id,
-    expiresAt: Date.now() + sessionDuration,
-    rememberMe: Boolean(rememberMe),
-    createdAt: new Date().toISOString()
-  };
-  saveDB(db);
+  const sessionToken = createSessionToken(db, user.id, rememberMe);
+  saveDB(db, true);
+  syncUsersToCloud(db.users, db.sessions);
 
   res.json({
     message: 'Login successful.',
@@ -2323,7 +2465,7 @@ setInterval(runRetentionCleanup, 15 * 60 * 1000);
 // -------------------------------------------------------------
 // Start Server and Output Connectivity Banners
 // -------------------------------------------------------------
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   const localIps = getLocalIPAddresses();
   console.log('\n======================================================');
   console.log('       ShareBoxZen Server is Active & Listening!       ');
@@ -2336,4 +2478,11 @@ server.listen(PORT, () => {
     console.log('\n📱 Scan from phone on same Wi-Fi/Hotspot to connect instantly!');
   }
   console.log('======================================================\n');
+
+  // Synchronize users from persistent Supabase Cloud Storage
+  try {
+    await loadUsersFromCloud();
+  } catch (err) {
+    console.warn('[Startup] Cloud users sync warning:', err.message);
+  }
 });

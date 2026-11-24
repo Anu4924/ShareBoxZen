@@ -166,6 +166,20 @@
       "isMobileVerified": true,
       "createdAt": "2026-11-23T04:59:36.300Z",
       "verifiedAt": "2026-11-23T04:59:36.308Z"
+    },
+    {
+      "id": "u_1795497579446_6ccc1643",
+      "username": "kalai_sk",
+      "email": "kalaiskeditz@gmail.com",
+      "mobileNumber": "+918072099231",
+      "name": "Kalai",
+      "zenId": "ZEN-4783-A4FB",
+      "passwordHash": "aec1c3873d86c803ee10f162fe8fe544:615e1bdf5eed508bd21f189a87d86b3ce06e90386685099825108a71059e82438459123c855438f3d5b55bb18dee1ef6e5619ca9d1572022786306f743ab7237",
+      "isVerified": true,
+      "isMobileVerified": true,
+      "verifiedAt": "2026-11-24T05:19:40.158Z",
+      "createdAt": "2026-11-24T05:19:39.449Z",
+      "updatedAt": "2026-11-24T05:19:40.158Z"
     }
   ],
   "transfers": {
@@ -1329,6 +1343,36 @@
       "expiresAt": 1798006695608,
       "rememberMe": true,
       "createdAt": "2026-11-23T06:18:15.608Z"
+    },
+    "7129f241394ad9ba41a0adac5035cad655fffccfe1988c0ff8b7ade4db61c96a": {
+      "userId": "u_1795497579446_6ccc1643",
+      "expiresAt": 1798089579450,
+      "rememberMe": true,
+      "createdAt": "2026-11-24T05:19:39.450Z"
+    },
+    "3660ec6067fa06ff80ad333474eb8a4bf5abfae1570a445e13fa6e8cd6ee3294": {
+      "userId": "u_1795497579446_6ccc1643",
+      "expiresAt": 1798089579665,
+      "rememberMe": true,
+      "createdAt": "2026-11-24T05:19:39.665Z"
+    },
+    "a7fa1c0f1178cb8632c026bb06387eccaadddee74e66470d511604e34f2edbc5": {
+      "userId": "u_1795497579446_6ccc1643",
+      "expiresAt": 1798089579850,
+      "rememberMe": true,
+      "createdAt": "2026-11-24T05:19:39.850Z"
+    },
+    "67ba3f11629082ed39eaef024cf348ff99eee73db2830f01ceb84d59e953b0fc": {
+      "userId": "u_1795497579446_6ccc1643",
+      "expiresAt": 1798089580006,
+      "rememberMe": true,
+      "createdAt": "2026-11-24T05:19:40.006Z"
+    },
+    "ebc0885cf3e9666ad22ffddb047b814d0b4343de047d86c00737bd2a27bd7c33": {
+      "userId": "u_1795497579446_6ccc1643",
+      "expiresAt": 1798089580161,
+      "rememberMe": true,
+      "createdAt": "2026-11-24T05:19:40.161Z"
     }
   },
   "verificationCodes": {},

@@ -794,11 +794,26 @@ async function handleRegisterSubmit() {
       return;
     }
 
+    // Direct Instant Activation & Login
+    if (data.token && data.user) {
+      setAuthenticatedUser(data.user, data.token, true);
+      const overlay = document.getElementById('auth-overlay');
+      if (overlay) {
+        overlay.classList.add('hidden');
+        overlay.style.setProperty('display', 'none', 'important');
+      }
+      showToast(`Welcome, ${data.user.name || data.user.username}! Your permanent account is ready.`, 'success');
+      return;
+    }
+
     pendingVerificationMobile = data.mobileNumber;
     pendingVerificationEmail = data.email;
-    document.getElementById('verify-mobile-target').textContent = data.mobileNumber;
-    document.getElementById('verify-code-dev-hint').textContent = data.verificationCode;
-    document.getElementById('verify-code-input').value = data.verificationCode;
+    const mobTarget = document.getElementById('verify-mobile-target');
+    if (mobTarget) mobTarget.textContent = data.mobileNumber;
+    const devHint = document.getElementById('verify-code-dev-hint');
+    if (devHint) devHint.textContent = data.verificationCode;
+    const codeInput = document.getElementById('verify-code-input');
+    if (codeInput) codeInput.value = data.verificationCode;
 
     showAuthView('verify');
     showToast('6-Digit OTP sent to your mobile. Please verify to activate.', 'info');
@@ -857,7 +872,11 @@ async function handleVerifySubmit() {
     }
 
     setAuthenticatedUser(data.user, data.token, rememberMe);
-    document.getElementById('auth-overlay').classList.add('hidden');
+    const overlay = document.getElementById('auth-overlay');
+    if (overlay) {
+      overlay.classList.add('hidden');
+      overlay.style.setProperty('display', 'none', 'important');
+    }
     showToast(`Account verified! Welcome to ShareBoxZen, ${data.user.name || data.user.username}!`, 'success');
   } catch (err) {
     const netErr = 'Verification network error. Please try again.';
@@ -904,12 +923,23 @@ async function handleLoginSubmit() {
     if (!res.ok) {
       const errMsg = data.error || 'Login failed.';
       showToast(errMsg, 'error');
-      if (loginErrEl) { loginErrEl.textContent = errMsg; loginErrEl.style.display = 'block'; }
+      if (loginErrEl) {
+        if (res.status === 404) {
+          loginErrEl.innerHTML = `${errMsg} <br><a href="javascript:void(0)" onclick="showAuthView('register'); var fn=document.getElementById('reg-fullname'); if(fn) fn.focus();" style="color:var(--accent-primary);text-decoration:underline;font-weight:600;display:inline-block;margin-top:6px;">&rarr; Click here to Create Account</a>`;
+        } else {
+          loginErrEl.textContent = errMsg;
+        }
+        loginErrEl.style.display = 'block';
+      }
       return;
     }
 
     setAuthenticatedUser(data.user, data.token, rememberMe);
-    document.getElementById('auth-overlay').classList.add('hidden');
+    const overlay = document.getElementById('auth-overlay');
+    if (overlay) {
+      overlay.classList.add('hidden');
+      overlay.style.setProperty('display', 'none', 'important');
+    }
     showToast(`Welcome back, ${data.user.name || data.user.username}!`, 'success');
   } catch (err) {
     const netErr = 'Login network error. Please check server connection.';
@@ -2007,10 +2037,6 @@ async function lookupReceiveTransfer(input) {
         executeFileDownload(transferId);
       };
     }
-  } catch (err) {
-    showToast('Failed to lookup transfer.', 'error');
-  }
-}
   } catch (err) {
     showToast('Failed to lookup transfer.', 'error');
   }
