@@ -652,7 +652,7 @@ function openProfileModal() {
 async function handleUpdateProfileSubmit() {
   const name = document.getElementById('profile-edit-name').value.trim();
   const preferredDeviceName = document.getElementById('profile-edit-device').value.trim();
-  const token = authToken || localStorage.getItem('shareboxzen_auth_token') || sessionStorage.getItem('shareboxzen_auth_token_session');
+  const token = getStoredAuthToken();
 
   try {
     const res = await fetch('/api/auth/update-profile', {
@@ -943,7 +943,7 @@ async function handleLogout() {
   if (!result.confirmed) return;
 
   // 2. Revoke active server session token
-  const token = authToken || localStorage.getItem('shareboxzen_auth_token') || sessionStorage.getItem('shareboxzen_auth_token_session');
+  const token = getStoredAuthToken();
   if (token) {
     try {
       await fetch('/api/auth/logout', {
@@ -996,7 +996,7 @@ async function handleChangePasswordSubmit() {
     return;
   }
 
-  const token = authToken || localStorage.getItem('shareboxzen_auth_token') || sessionStorage.getItem('shareboxzen_auth_token_session');
+  const token = getStoredAuthToken();
   if (!token) {
     showToast('Session expired. Please log in again.', 'error');
     return;
@@ -2019,7 +2019,7 @@ async function lookupReceiveTransfer(input) {
 async function loadIncomingTransfers() {
   const container = document.getElementById('incoming-files-container');
   const badge = document.getElementById('incoming-count-badge');
-  const token = authToken || localStorage.getItem('shareboxzen_auth_token') || sessionStorage.getItem('shareboxzen_auth_token_session');
+  const token = getStoredAuthToken();
 
   if (!token || !currentUser) {
     if (badge) badge.style.display = 'none';
@@ -2103,7 +2103,7 @@ async function loadIncomingTransfers() {
 }
 
 async function handleAcceptIncoming(id) {
-  const token = authToken || localStorage.getItem('shareboxzen_auth_token') || sessionStorage.getItem('shareboxzen_auth_token_session');
+  const token = getStoredAuthToken();
   try {
     const res = await fetch(`/api/transfers/${id}/accept`, {
       method: 'POST',
@@ -2123,7 +2123,7 @@ async function handleAcceptIncoming(id) {
 }
 
 async function handleRejectIncoming(id) {
-  const token = authToken || localStorage.getItem('shareboxzen_auth_token') || sessionStorage.getItem('shareboxzen_auth_token_session');
+  const token = getStoredAuthToken();
   try {
     const res = await fetch(`/api/transfers/${id}/reject`, {
       method: 'POST',
@@ -2171,7 +2171,7 @@ function initTransferredFiles() {
 }
 
 async function loadTransferHistory() {
-  const token = authToken || localStorage.getItem('shareboxzen_auth_token') || sessionStorage.getItem('shareboxzen_auth_token_session');
+  const token = getStoredAuthToken();
   if (!token || !currentUser) {
     historyData = { sent: [], received: [] };
     renderTransferHistoryCards();
@@ -2636,7 +2636,7 @@ async function promptRevokeLink(id) {
 
   if (!result.confirmed) return;
 
-  const token = authToken || localStorage.getItem('shareboxzen_auth_token') || sessionStorage.getItem('shareboxzen_auth_token_session');
+  const token = getStoredAuthToken();
   try {
     const res = await fetch(`/api/transfers/${id}/revoke`, {
       method: 'POST',
@@ -2662,7 +2662,7 @@ async function promptDeleteTransfer(id, isOwner = false) {
 
   if (!result.confirmed) return;
 
-  const token = authToken || localStorage.getItem('shareboxzen_auth_token') || sessionStorage.getItem('shareboxzen_auth_token_session');
+  const token = getStoredAuthToken();
   try {
     const url = `/api/transfers/${id}` + (result.deletePhysical ? '?deleteFile=true' : '');
     const res = await fetch(url, {

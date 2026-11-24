@@ -54,15 +54,19 @@ class ZenNearby {
   connectSignaling() {
     let wsHost = window.location.host;
     let protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    if (!wsHost || window.location.protocol === 'file:') {
-      const savedHost = localStorage.getItem('zen_server_host') || 'http://172.31.91.45:3000';
+    
+    // Resolve signaling host dynamically (handles APK file:// protocol, local Wi-Fi pairing, and cloud signaling)
+    if (!wsHost || window.location.protocol === 'file:' || wsHost.includes('172.31.91.45')) {
+      const activeHost = (typeof getActiveServerHost === 'function' && getActiveServerHost())
+        ? getActiveServerHost()
+        : (typeof DEFAULT_ZEN_SERVER !== 'undefined' ? DEFAULT_ZEN_SERVER : 'https://shareboxzen.onrender.com');
       try {
-        const parsed = new URL(savedHost);
+        const parsed = new URL(activeHost);
         wsHost = parsed.host;
         protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
       } catch (e) {
-        wsHost = '172.31.91.45:3000';
-        protocol = 'ws:';
+        wsHost = 'shareboxzen.onrender.com';
+        protocol = 'wss:';
       }
     }
     const wsUrl = `${protocol}//${wsHost}`;
@@ -75,7 +79,7 @@ class ZenNearby {
     }
 
     this.ws.onopen = () => {
-      this.onLog('[Nearby] Connected to local zero-internet signaling.');
+      this.onLog('[Nearby] Connected to signaling service (' + wsHost + ').');
       this.ws.send(JSON.stringify({
         type: 'set-device-info',
         name: this.deviceName,
