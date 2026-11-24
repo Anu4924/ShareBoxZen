@@ -1784,13 +1784,15 @@ async function startSendFilesQueue() {
           }
         });
 
+        const isE2ee = Boolean(document.getElementById('send-e2ee-enable')?.checked);
         currentChunker.initiate(file, {
           senderId: currentUser ? currentUser.id : 'anonymous',
           recipientId,
           isPublic: recipientMode === 'link',
           password,
           expiresIn,
-          maxDownloads
+          maxDownloads,
+          e2ee: isE2ee
         }).catch(err => {
           showToast(`Upload error for "${file.name}": ${err.message}`, 'error');
           reject(err);
@@ -1857,28 +1859,29 @@ function parseTransferInput(input) {
   }
 
   // 2. Extract transfer ID or token from link formats
-  if (cleaned.includes('id=')) {
+  if (cleaned.includes('/share/') || cleaned.includes('/api/share/')) {
+    const shareMatch = cleaned.match(/\/(?:api\/)?share\/([a-zA-Z0-9_-]+)/);
+    if (shareMatch) token = shareMatch[1];
+  } else if (cleaned.includes('token=')) {
+    const tokenMatch = cleaned.match(/token=([a-zA-Z0-9_-]+)/);
+    if (tokenMatch) token = tokenMatch[1];
+  } else if (cleaned.includes('id=')) {
     const idMatch = cleaned.match(/id=([a-zA-Z0-9_-]+)/);
     if (idMatch) transferId = idMatch[1];
   } else if (cleaned.includes('/d/')) {
     const dMatch = cleaned.match(/\/d\/([a-zA-Z0-9_-]+)/);
     if (dMatch) transferId = dMatch[1];
-  } else if (cleaned.includes('/share/') || cleaned.includes('/api/share/')) {
-    const shareMatch = cleaned.match(/\/share\/([a-zA-Z0-9_-]+)/);
-    if (shareMatch) token = shareMatch[1];
-  } else if (cleaned.includes('token=')) {
-    const tokenMatch = cleaned.match(/token=([a-zA-Z0-9_-]+)/);
-    if (tokenMatch) token = tokenMatch[1];
   }
 
   // 3. Fallback: Raw ID extraction
   if (!transferId && !token) {
     const cleanId = cleaned.split(/[?#&/]/)[0];
-    if (/^[a-zA-Z0-9_-]{8,}$/.test(cleanId)) {
+    if (/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(cleanId)) {
       transferId = cleanId;
-    } else {
-      const uuidMatch = cleaned.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i);
-      if (uuidMatch) transferId = uuidMatch[0];
+    } else if (/^[a-zA-Z0-9_-]{16,64}$/.test(cleanId)) {
+      token = cleanId;
+    } else if (/^[a-zA-Z0-9_-]{6,}$/.test(cleanId)) {
+      transferId = cleanId;
     }
   }
 
@@ -1916,9 +1919,9 @@ function initReceiveTab() {
   const hash = window.location.hash;
   if (hash.startsWith('#receive')) {
     const parsed = parseTransferInput(hash);
-    if (parsed.transferId) {
+    if (parsed.transferId || parsed.token) {
       document.querySelector('.tab-btn[data-tab="tab-receive"]')?.click();
-      if (inputLookup) inputLookup.value = parsed.transferId;
+      if (inputLookup) inputLookup.value = parsed.transferId || parsed.token;
       if (parsed.key) {
         activeReceiveCryptoKey = parsed.key;
       }
@@ -1940,32 +1943,55 @@ async function lookupReceiveTransfer(input) {
 
   try {
     let transfer = null;
+
+    // 1. Try token endpoint if token was extracted
     if (token) {
       const pass = document.getElementById('receive-password')?.value.trim();
       const url = `/api/share/${token}` + (pass ? `?password=${encodeURIComponent(pass)}` : '');
       const res = await fetch(url);
       const data = await res.json();
-      if (!res.ok) {
-        if (res.status === 401 && data.passwordRequired) {
-          if (passContainer) passContainer.style.display = 'block';
-          showToast('This file is password-protected. Please enter password and retry.', 'info');
-          return;
-        }
-        showToast(data.error || 'Share link is invalid, expired, or revoked.', 'error');
+      if (res.ok) {
+        transfer = data;
+        transferId = data.transferId;
+      } else if (res.status === 401 && data.passwordRequired) {
+        if (passContainer) passContainer.style.display = 'block';
+        showToast('This file is password-protected. Please enter password and retry.', 'info');
         return;
       }
-      transfer = data;
-      transferId = data.transferId;
-    } else {
-      const res = await fetch(`/api/transfer/${transferId}/status`);
-      if (!res.ok) {
-        showToast('Transfer record not found or incomplete.', 'error');
-        return;
-      }
-      transfer = await res.json();
     }
 
-    if (transfer && detailsCard) {
+    // 2. Try transfer ID status endpoint
+    if (!transfer && transferId) {
+      const res = await fetch(`/api/transfer/${transferId}/status`);
+      if (res.ok) {
+        transfer = await res.json();
+      }
+    }
+
+    // 3. Fallback: if token was used as ID or ID was used as token
+    if (!transfer) {
+      const fallbackId = token || transferId;
+      if (fallbackId) {
+        const resShare = await fetch(`/api/share/${fallbackId}`);
+        if (resShare.ok) {
+          transfer = await resShare.json();
+          transferId = transfer.transferId;
+        } else {
+          const resStat = await fetch(`/api/transfer/${fallbackId}/status`);
+          if (resStat.ok) {
+            transfer = await resStat.json();
+            transferId = transfer.id || fallbackId;
+          }
+        }
+      }
+    }
+
+    if (!transfer) {
+      showToast('Transfer record not found or incomplete.', 'error');
+      return;
+    }
+
+    if (detailsCard) {
       activeReceiveTransferId = transferId;
       detailsCard.style.display = 'block';
       document.getElementById('rec-filename').textContent = transfer.fileName;
@@ -1981,6 +2007,10 @@ async function lookupReceiveTransfer(input) {
         executeFileDownload(transferId);
       };
     }
+  } catch (err) {
+    showToast('Failed to lookup transfer.', 'error');
+  }
+}
   } catch (err) {
     showToast('Failed to lookup transfer.', 'error');
   }
@@ -2322,11 +2352,14 @@ async function executeFileDownload(id, password = null) {
     const transfer = await metaRes.json();
     const fileName = transfer.fileName || 'downloaded_file';
     const mimeType = transfer.fileType || 'application/octet-stream';
+    const isImageOrVideo = mimeType.startsWith('image/') || mimeType.startsWith('video/') ||
+      /\.(jpg|jpeg|png|gif|webp|svg|bmp|mp4|mkv|mov|avi|webm)$/i.test(fileName);
 
     // 2. Obtain download ticket via POST body if password is required (keeps passwords out of URLs)
     let ticket = null;
+    let pwd = password;
     if (transfer.hasPassword) {
-      const pwd = password || document.getElementById('receive-password')?.value.trim();
+      pwd = pwd || document.getElementById('receive-password')?.value.trim();
       if (!pwd) {
         const passContainer = document.getElementById('receive-password-container');
         if (passContainer) passContainer.style.display = 'block';
@@ -2350,17 +2383,54 @@ async function executeFileDownload(id, password = null) {
     const downloadPath = `/api/transfer/${id}/download${query}`;
     const absoluteDownloadUrl = `${getPublicAppUrl()}${downloadPath}`;
 
-    // 3. CASE A: Unencrypted File (Direct high-speed streaming without memory overhead or CORS issues)
+    // 3. CASE A: Unencrypted File
     if (!transfer.isEncrypted) {
+      // For files <= 45MB: fetch blob directly for instant native Android MediaStore album saving or same-origin browser download
+      if (!transfer.fileSize || transfer.fileSize <= 45 * 1024 * 1024) {
+        showToast(`Downloading ${fileName}...`, 'info');
+        const fileRes = await fetch(downloadPath);
+        if (!fileRes.ok) {
+          throw new Error(`Download request failed with status ${fileRes.status}`);
+        }
+        const fileBlob = await fileRes.blob();
+
+        // Android App: save directly into Gallery/Albums or Downloads via MediaStore bridge
+        if (window.ShareBoxAndroid && typeof window.ShareBoxAndroid.saveFileToDevice === 'function') {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            try {
+              const base64 = reader.result.split(',')[1];
+              window.ShareBoxAndroid.saveFileToDevice(base64, fileName, mimeType);
+              showToast(`✓ Saved to ${isImageOrVideo ? 'Albums/Gallery' : 'My Files'}: ${fileName}`, 'success');
+            } catch (saveErr) {
+              console.error('Android native save error, falling back:', saveErr);
+              window.ShareBoxAndroid.downloadFileFromUrl(absoluteDownloadUrl, fileName, mimeType, '');
+            }
+          };
+          reader.readAsDataURL(fileBlob);
+          return;
+        }
+
+        // Web Browser: create same-origin blob URL (immune to cross-origin download restrictions)
+        const blobUrl = URL.createObjectURL(fileBlob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
+        showToast('✓ Download complete: ' + fileName, 'success');
+        return;
+      }
+
+      // Large files (> 45MB): stream directly via DownloadManager in Android or anchor in browser
       if (window.ShareBoxAndroid && typeof window.ShareBoxAndroid.downloadFileFromUrl === 'function') {
         window.ShareBoxAndroid.downloadFileFromUrl(absoluteDownloadUrl, fileName, mimeType, '');
         showToast(`✓ Starting download to My Files: ${fileName}`, 'success');
         return;
       }
 
-      // Standard browser download stream:
-      // Triggering direct download avoids loading entire multi-megabyte/gigabyte file into JS memory
-      // and natively handles redirects to Supabase storage CDN without CORS friction
       const a = document.createElement('a');
       a.href = downloadPath;
       a.download = fileName;
@@ -2373,21 +2443,22 @@ async function executeFileDownload(id, password = null) {
 
     // 4. CASE B: End-to-End Encrypted File (Decrypt with client-side AES-GCM-256)
     showToast('Decrypting file with AES-GCM-256 on device...', 'info');
-    let keyHex = activeReceiveCryptoKey;
-    if (!keyHex && window.location.hash.includes('key=')) {
-      keyHex = window.location.hash.split('key=')[1].split('&')[0];
+    let keyInput = activeReceiveCryptoKey;
+    if (!keyInput && window.location.hash.includes('key=')) {
+      keyInput = window.location.hash.split('key=')[1].split('&')[0];
     }
-    if (!keyHex) {
-      keyHex = prompt('Enter the 256-bit encryption key or transfer password for this file:');
+    if (!keyInput && pwd) {
+      keyInput = pwd;
+    }
+    if (!keyInput) {
+      keyInput = prompt('Enter the transfer password or 256-bit encryption key for this file:');
     }
 
-    if (!keyHex) {
-      showToast('Decryption key is required.', 'error');
+    if (!keyInput) {
+      showToast('Decryption key or password is required.', 'error');
       return;
     }
 
-    // Notice: Do NOT attach Authorization header to the binary download request
-    // to prevent CORS failures when server redirects to Cloud Storage CDN
     const fileRes = await fetch(downloadPath);
     if (!fileRes.ok) {
       showToast('Download request failed.', 'error');
@@ -2395,7 +2466,7 @@ async function executeFileDownload(id, password = null) {
     }
 
     const cipherBuf = await fileRes.arrayBuffer();
-    const cryptoKey = await ZenChunker.importKey(keyHex.trim());
+    const cryptoKey = await ZenChunker.importKey(keyInput.trim());
     const plainBuf = await ZenChunker.decryptBuffer(cipherBuf, cryptoKey);
     const fileBlob = new Blob([plainBuf], { type: mimeType });
     showToast('✓ Client-side decryption successful!', 'success');
@@ -2406,6 +2477,7 @@ async function executeFileDownload(id, password = null) {
         try {
           const base64 = reader.result.split(',')[1];
           window.ShareBoxAndroid.saveFileToDevice(base64, fileName, mimeType);
+          showToast(`✓ Saved to ${isImageOrVideo ? 'Albums/Gallery' : 'My Files'}: ${fileName}`, 'success');
         } catch (saveErr) {
           console.error('Android native save error:', saveErr);
         }

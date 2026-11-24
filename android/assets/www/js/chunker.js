@@ -111,6 +111,29 @@ class ZenChunker {
   }
 
   // Client-side authenticated AES-GCM encryption
+  static async deriveKeyFromPassword(password, saltString = 'ShareBoxZenSalt') {
+    const enc = new TextEncoder();
+    const pwKey = await crypto.subtle.importKey(
+      'raw',
+      enc.encode(password),
+      { name: 'PBKDF2' },
+      false,
+      ['deriveKey']
+    );
+    return await crypto.subtle.deriveKey(
+      {
+        name: 'PBKDF2',
+        salt: enc.encode(saltString),
+        iterations: 100000,
+        hash: 'SHA-256'
+      },
+      pwKey,
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt']
+    );
+  }
+
   static async generateKey() {
     const raw = crypto.getRandomValues(new Uint8Array(32));
     const cryptoKey = await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
@@ -118,9 +141,69 @@ class ZenChunker {
     return { cryptoKey, keyHex, raw };
   }
 
-  static async importKey(keyHex) {
-    const bytes = new Uint8Array(keyHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
-    return await crypto.subtle.importKey('raw', bytes, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
+  static async importKey(keyInput) {
+    const cleaned = String(keyInput || '').trim();
+    if (/^[0-9a-fA-F]{64}$/.test(cleaned)) {
+      const bytes = new Uint8Array(cleaned.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+      return await crypto.subtle.importKey('raw', bytes, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
+    }
+    // If not a 64-char hex key, derive AES key from input using PBKDF2
+    return await ZenChunker.deriveKeyFromPassword(cleaned);
+  }
+
+  static async encryptChunk(buffer, key) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, buffer);
+    const totalLen = 12 + ciphertext.byteLength;
+    const frame = new Uint8Array(4 + totalLen);
+    const view = new DataView(frame.buffer);
+    view.setUint32(0, totalLen, false); // big-endian
+    frame.set(iv, 4);
+    frame.set(new Uint8Array(ciphertext), 16);
+    return frame;
+  }
+
+  static async decryptFramedStream(combinedBuffer, key) {
+    const data = new Uint8Array(combinedBuffer);
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    const decryptedChunks = [];
+    let offset = 0;
+
+    // Check if the stream starts with framed chunk structure
+    if (data.length >= 28) {
+      const firstLen = view.getUint32(0, false);
+      if (firstLen > 12 && firstLen <= data.length - 4) {
+        let validFrames = true;
+        let testOffset = 0;
+        while (testOffset + 4 <= data.length) {
+          const flen = view.getUint32(testOffset, false);
+          if (flen <= 12 || testOffset + 4 + flen > data.length) {
+            validFrames = false;
+            break;
+          }
+          testOffset += 4 + flen;
+        }
+
+        if (validFrames && testOffset === data.length) {
+          while (offset + 4 <= data.length) {
+            const frameLen = view.getUint32(offset, false);
+            offset += 4;
+            const iv = data.subarray(offset, offset + 12);
+            const cipher = data.subarray(offset + 12, offset + frameLen);
+            const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, cipher);
+            decryptedChunks.push(new Uint8Array(plain));
+            offset += frameLen;
+          }
+          return decryptedChunks;
+        }
+      }
+    }
+
+    // Fallback: single buffer [12 bytes IV + ciphertext]
+    const iv = data.subarray(0, 12);
+    const cipher = data.subarray(12);
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, cipher);
+    return [new Uint8Array(plain)];
   }
 
   static async encryptBuffer(buffer, key) {
@@ -133,10 +216,16 @@ class ZenChunker {
   }
 
   static async decryptBuffer(combinedBuffer, key) {
-    const data = new Uint8Array(combinedBuffer);
-    const iv = data.slice(0, 12);
-    const ciphertext = data.slice(12);
-    return await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+    const chunks = await ZenChunker.decryptFramedStream(combinedBuffer, key);
+    let totalLen = 0;
+    for (const c of chunks) totalLen += c.length;
+    const merged = new Uint8Array(totalLen);
+    let pos = 0;
+    for (const c of chunks) {
+      merged.set(c, pos);
+      pos += c.length;
+    }
+    return merged.buffer;
   }
 
   async initiate(file, metadata = {}) {
@@ -154,11 +243,16 @@ class ZenChunker {
     const fileHash = await this.calculateFileHash(file);
 
     // End-to-end client-side encryption (AES-GCM-256)
-    this.isEncrypted = metadata.e2ee !== false;
+    this.isEncrypted = Boolean(metadata.e2ee);
     if (this.isEncrypted) {
-      const { cryptoKey, keyHex } = await ZenChunker.generateKey();
-      this.encryptionKey = cryptoKey;
-      this.encryptionKeyHex = keyHex;
+      if (metadata.password) {
+        this.encryptionKey = await ZenChunker.deriveKeyFromPassword(metadata.password);
+        this.encryptionKeyHex = null;
+      } else {
+        const { cryptoKey, keyHex } = await ZenChunker.generateKey();
+        this.encryptionKey = cryptoKey;
+        this.encryptionKeyHex = keyHex;
+      }
     } else {
       this.encryptionKey = null;
       this.encryptionKeyHex = null;
@@ -302,7 +396,7 @@ class ZenChunker {
     // If client-side E2EE is active, encrypt the chunk before uploading
     if (this.isEncrypted && this.encryptionKey) {
       const rawBuffer = await chunkPayload.arrayBuffer();
-      const encryptedBytes = await ZenChunker.encryptBuffer(rawBuffer, this.encryptionKey);
+      const encryptedBytes = await ZenChunker.encryptChunk(rawBuffer, this.encryptionKey);
       chunkPayload = new Blob([encryptedBytes], { type: 'application/octet-stream' });
     }
 

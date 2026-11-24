@@ -228,9 +228,13 @@ app.use(express.urlencoded({ extended: true }));
 // Dedicated Mobile APK Download Route with standard Android MIME & Attachment headers
 app.get(['/ShareBoxZen.apk', '/download/apk', '/app.apk'], (req, res) => {
   const candidatePaths = [
+    path.join(ROOT_DIR, 'ShareBoxZen-v1.0.4.apk'),
+    path.join(ROOT_DIR, 'ShareBoxZen-v1.0.3.apk'),
     path.join(ROOT_DIR, 'ShareBoxZen-v1.0.2.apk'),
     path.join(ROOT_DIR, 'ShareBoxZen.apk'),
     path.join(ROOT_DIR, 'public', 'ShareBoxZen.apk'),
+    path.join(__dirname, 'ShareBoxZen-v1.0.4.apk'),
+    path.join(__dirname, 'ShareBoxZen-v1.0.3.apk'),
     path.join(__dirname, 'ShareBoxZen-v1.0.2.apk'),
     path.join(__dirname, 'ShareBoxZen.apk'),
     path.join(__dirname, 'public', 'ShareBoxZen.apk')
@@ -1160,12 +1164,20 @@ app.get('/api/transfer/:id/status', (req, res) => {
     id: transfer.id,
     fileName: transfer.fileName,
     fileSize: transfer.fileSize,
+    fileType: transfer.fileType || 'application/octet-stream',
     totalChunks: transfer.totalChunks,
     uploadedCount: transfer.uploadedChunks.length,
     uploadedChunks: transfer.uploadedChunks,
     missingChunks,
     status: transfer.status,
-    isComplete: transfer.uploadedChunks.length === transfer.totalChunks
+    isComplete: transfer.status === 'COMPLETED' || transfer.uploadedChunks.length === transfer.totalChunks,
+    hasPassword: Boolean(transfer.hasPassword),
+    isEncrypted: Boolean(transfer.isEncrypted),
+    isPublic: Boolean(transfer.isPublic),
+    cloudUrl: transfer.cloudUrl || null,
+    expiresAt: transfer.expiresAt || null,
+    maxDownloads: transfer.maxDownloads || 0,
+    downloadCount: transfer.downloadCount || 0
   });
 });
 
@@ -1430,12 +1442,16 @@ app.get('/api/transfer/:id/download', (req, res) => {
   saveDB(db);
 
   // If cloud storage URL exists, redirect directly to Supabase CDN for instant worldwide download!
+  // Appending ?download= forces Supabase Storage to return Content-Disposition: attachment; filename=...
   if (transfer.cloudUrl) {
-    return res.redirect(transfer.cloudUrl);
+    const redirectUrl = transfer.cloudUrl.includes('?')
+      ? `${transfer.cloudUrl}&download=${encodeURIComponent(transfer.fileName)}`
+      : `${transfer.cloudUrl}?download=${encodeURIComponent(transfer.fileName)}`;
+    return res.redirect(redirectUrl);
   }
 
   const filePath = transfer.completedFilePath;
-  if (!fs.existsSync(filePath)) {
+  if (!filePath || !fs.existsSync(filePath)) {
     return res.status(404).json({ error: 'Physical file is missing from storage.' });
   }
 

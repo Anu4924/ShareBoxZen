@@ -217,6 +217,7 @@ public class MainActivity extends Activity implements DownloadListener {
                     ContentValues values = new ContentValues();
                     values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
                     values.put(MediaStore.MediaColumns.MIME_TYPE, cleanMime);
+                    values.put(MediaStore.MediaColumns.IS_PENDING, 1);
 
                     Uri collectionUri;
                     if (isImage) {
@@ -240,6 +241,9 @@ public class MainActivity extends Activity implements DownloadListener {
                                 os.close();
                             }
                         }
+                        values.clear();
+                        values.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                        resolver.update(savedUri, values, null, null);
                     }
                 } else {
                     File targetDir;
