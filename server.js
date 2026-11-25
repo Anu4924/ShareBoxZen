@@ -324,6 +324,162 @@ async function loadUsersFromCloud() {
   }
 }
 
+// MIME Type Resolver for Documents, Photos, Videos and Archives
+function getMimeType(fileName, fallback = 'application/octet-stream') {
+  if (!fileName) return fallback;
+  const lower = fileName.toLowerCase();
+  const ext = lower.split('.').pop();
+  const mimeMap = {
+    pdf: 'application/pdf',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    txt: 'text/plain',
+    csv: 'text/csv',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    svg: 'image/svg+xml',
+    bmp: 'image/bmp',
+    mp4: 'video/mp4',
+    mkv: 'video/x-matroska',
+    mov: 'video/quicktime',
+    avi: 'video/x-msvideo',
+    webm: 'video/webm',
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    zip: 'application/zip',
+    rar: 'application/x-rar-compressed',
+    '7z': 'application/x-7z-compressed',
+    apk: 'application/vnd.android.package-archive',
+    json: 'application/json'
+  };
+  return mimeMap[ext] || fallback;
+}
+
+// Restore & Merge Transfers from Persistent Supabase Cloud Database
+async function loadTransfersFromCloud() {
+  if (!supabase) return;
+  try {
+    const { data: cloudList, error } = await supabase
+      .from('transfers')
+      .select('*')
+      .neq('id', 'SYS_USER_METADATA_V1')
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    if (cloudList && !error && Array.isArray(cloudList)) {
+      const db = loadDB();
+      db.transfers = db.transfers || {};
+      db.shareLinks = db.shareLinks || {};
+
+      cloudList.forEach(ct => {
+        const { data: urlData } = supabase.storage
+          .from('shareboxzen-files')
+          .getPublicUrl(ct.file_path);
+
+        const realMime = getMimeType(ct.file_name, ct.file_type);
+
+        db.transfers[ct.id] = {
+          id: ct.id,
+          fileName: ct.file_name,
+          fileSize: ct.file_size,
+          fileType: realMime,
+          status: ct.status || 'COMPLETED',
+          cloudUrl: urlData ? urlData.publicUrl : null,
+          hasPassword: Boolean(ct.has_password),
+          passwordHash: ct.password_hash,
+          shareToken: ct.share_token,
+          isPublic: Boolean(ct.is_public),
+          isRevoked: Boolean(ct.is_revoked),
+          senderId: ct.sender_id,
+          recipientId: ct.recipient_id,
+          createdAt: ct.created_at,
+          downloadCount: ct.download_count || 0
+        };
+        if (ct.share_token) {
+          db.shareLinks[ct.share_token] = ct.id;
+        }
+      });
+      saveDB(db);
+      console.log(`[Cloud Sync] Restored ${cloudList.length} transfer records from Supabase.`);
+    }
+  } catch (err) {
+    console.warn('[Cloud Sync] Error restoring transfers from Supabase:', err.message);
+  }
+}
+
+// Retrieve single transfer record, querying Supabase if not in memory
+async function getTransferRecord(db, id) {
+  if (!id) return null;
+  db.transfers = db.transfers || {};
+  let transfer = db.transfers[id];
+
+  if (!transfer && supabase) {
+    try {
+      const { data: ct, error } = await supabase
+        .from('transfers')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (ct && !error) {
+        const { data: urlData } = supabase.storage
+          .from('shareboxzen-files')
+          .getPublicUrl(ct.file_path);
+
+        const realMime = getMimeType(ct.file_name, ct.file_type);
+
+        transfer = {
+          id: ct.id,
+          fileName: ct.file_name,
+          fileSize: ct.file_size,
+          fileType: realMime,
+          status: ct.status || 'COMPLETED',
+          cloudUrl: urlData ? urlData.publicUrl : null,
+          hasPassword: Boolean(ct.has_password),
+          passwordHash: ct.password_hash,
+          shareToken: ct.share_token,
+          isPublic: Boolean(ct.is_public),
+          isRevoked: Boolean(ct.is_revoked),
+          senderId: ct.sender_id,
+          recipientId: ct.recipient_id,
+          createdAt: ct.created_at,
+          downloadCount: ct.download_count || 0
+        };
+        db.transfers[id] = transfer;
+        if (transfer.shareToken) {
+          db.shareLinks = db.shareLinks || {};
+          db.shareLinks[transfer.shareToken] = id;
+        }
+        saveDB(db);
+      }
+    } catch (e) {
+      console.warn('[Supabase] Failed to fetch transfer from Supabase:', e.message);
+    }
+  }
+
+  // Ensure cloudUrl is valid
+  if (transfer && !transfer.cloudUrl && supabase) {
+    try {
+      const storagePath = `${id}/${transfer.fileName}`;
+      const { data: urlData } = supabase.storage
+        .from('shareboxzen-files')
+        .getPublicUrl(storagePath);
+      if (urlData && urlData.publicUrl) {
+        transfer.cloudUrl = urlData.publicUrl;
+      }
+    } catch (e) {}
+  }
+
+  return transfer;
+}
+
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -1274,13 +1430,38 @@ app.post('/api/transfer/init', (req, res) => {
 });
 
 // 2. Query transfer status (For Resuming after network reconnect)
-app.get('/api/transfer/:id/status', (req, res) => {
+app.get('/api/transfer/:id/status', async (req, res) => {
   const { id } = req.params;
   const db = loadDB();
-  const transfer = db.transfers[id];
+  const transfer = await getTransferRecord(db, id);
 
   if (!transfer) {
     return res.status(404).json({ error: 'Transfer session not found.' });
+  }
+
+  // If already completed, return full metadata with verified MIME type
+  if (transfer.status === 'COMPLETED') {
+    return res.json({
+      id: transfer.id,
+      fileName: transfer.fileName,
+      fileSize: transfer.fileSize,
+      fileType: getMimeType(transfer.fileName, transfer.fileType),
+      totalChunks: transfer.totalChunks || 1,
+      uploadedCount: transfer.totalChunks || 1,
+      uploadedChunks: transfer.uploadedChunks || [0],
+      missingChunks: [],
+      status: 'COMPLETED',
+      isComplete: true,
+      hasPassword: Boolean(transfer.hasPassword),
+      isEncrypted: Boolean(transfer.isEncrypted),
+      isPublic: Boolean(transfer.isPublic),
+      cloudUrl: transfer.cloudUrl || null,
+      shareToken: transfer.shareToken,
+      calculatedHash: transfer.calculatedHash,
+      integrityVerified: Boolean(transfer.integrityVerified),
+      createdAt: transfer.createdAt,
+      completedAt: transfer.completedAt
+    });
   }
 
   // Verify chunks actually present on disk
@@ -1306,7 +1487,7 @@ app.get('/api/transfer/:id/status', (req, res) => {
     id: transfer.id,
     fileName: transfer.fileName,
     fileSize: transfer.fileSize,
-    fileType: transfer.fileType || 'application/octet-stream',
+    fileType: getMimeType(transfer.fileName, transfer.fileType),
     totalChunks: transfer.totalChunks,
     uploadedCount: transfer.uploadedChunks.length,
     uploadedChunks: transfer.uploadedChunks,
@@ -1431,10 +1612,13 @@ app.post('/api/transfer/:id/complete', async (req, res) => {
       try {
         const fileBuffer = fs.readFileSync(completedFilePath);
         const storagePath = `${id}/${transfer.fileName}`;
+        const realMime = getMimeType(transfer.fileName, transfer.fileType);
+        transfer.fileType = realMime;
+
         const { data: sUpload, error: sErr } = await supabase.storage
           .from('shareboxzen-files')
           .upload(storagePath, fileBuffer, {
-            contentType: 'application/octet-stream',
+            contentType: realMime,
             upsert: true
           });
 
@@ -1450,7 +1634,7 @@ app.post('/api/transfer/:id/complete', async (req, res) => {
             id: transfer.id,
             file_name: transfer.fileName,
             file_size: transfer.fileSize,
-            file_type: transfer.fileType || 'application/octet-stream',
+            file_type: realMime,
             file_path: storagePath,
             share_token: transfer.shareToken,
             is_public: Boolean(transfer.isPublic),
@@ -1487,11 +1671,11 @@ app.post('/api/transfer/:id/complete', async (req, res) => {
 // -------------------------------------------------------------
 // REST API: Resumable Downloads (HTTP Range Support) & Passwords
 // -------------------------------------------------------------
-app.post('/api/transfer/:id/authorize-download', (req, res) => {
+app.post('/api/transfer/:id/authorize-download', async (req, res) => {
   const { id } = req.params;
   const { password } = req.body;
   const db = loadDB();
-  const transfer = db.transfers[id];
+  const transfer = await getTransferRecord(db, id);
 
   if (!transfer || transfer.status !== 'COMPLETED') {
     return res.status(404).json({ error: 'Completed file not found.' });
@@ -1528,13 +1712,13 @@ app.post('/api/transfer/:id/authorize-download', (req, res) => {
   res.json({ success: true, ticket });
 });
 
-app.get('/api/transfer/:id/download', (req, res) => {
+app.get('/api/transfer/:id/download', async (req, res) => {
   const { id } = req.params;
   const ticket = req.query.ticket;
   const headerPassword = req.headers['x-share-password'];
 
   const db = loadDB();
-  const transfer = db.transfers[id];
+  const transfer = await getTransferRecord(db, id);
 
   if (!transfer || transfer.status !== 'COMPLETED') {
     return res.status(404).json({ error: 'Completed file not found.' });
@@ -1600,6 +1784,7 @@ app.get('/api/transfer/:id/download', (req, res) => {
   const stat = fs.statSync(filePath);
   const fileSize = stat.size;
   const range = req.headers.range;
+  const contentType = getMimeType(transfer.fileName, transfer.fileType);
 
   // Support Resumable Multi-GB Downloads with HTTP 206 Partial Content
   if (range) {
@@ -1613,14 +1798,14 @@ app.get('/api/transfer/:id/download', (req, res) => {
       'Content-Range': `bytes ${start}-${end}/${fileSize}`,
       'Accept-Ranges': 'bytes',
       'Content-Length': chunksize,
-      'Content-Type': 'application/octet-stream',
+      'Content-Type': contentType,
       'Content-Disposition': `attachment; filename="${encodeURIComponent(transfer.fileName)}"`
     });
     fileStream.pipe(res);
   } else {
     res.writeHead(200, {
       'Content-Length': fileSize,
-      'Content-Type': 'application/octet-stream',
+      'Content-Type': contentType,
       'Content-Disposition': `attachment; filename="${encodeURIComponent(transfer.fileName)}"`,
       'Accept-Ranges': 'bytes'
     });
@@ -1629,16 +1814,34 @@ app.get('/api/transfer/:id/download', (req, res) => {
 });
 
 // Resolve Share Link
-app.get('/api/share/:token', (req, res) => {
+app.get('/api/share/:token', async (req, res) => {
   const { token } = req.params;
   const db = loadDB();
-  const transferId = db.shareLinks[token];
+  let transferId = db.shareLinks ? db.shareLinks[token] : null;
 
-  if (!transferId || !db.transfers[transferId]) {
+  if (!transferId && supabase) {
+    try {
+      const { data: ct } = await supabase
+        .from('transfers')
+        .select('id')
+        .eq('share_token', token)
+        .maybeSingle();
+      if (ct) {
+        transferId = ct.id;
+        db.shareLinks = db.shareLinks || {};
+        db.shareLinks[token] = transferId;
+      }
+    } catch (e) {}
+  }
+
+  if (!transferId) {
     return res.status(404).json({ error: 'Share link invalid or expired.' });
   }
 
-  const transfer = db.transfers[transferId];
+  const transfer = await getTransferRecord(db, transferId);
+  if (!transfer) {
+    return res.status(404).json({ error: 'Share link invalid or expired.' });
+  }
 
   // Check if revoked or expired or deleted
   if (transfer.isRevoked) {
@@ -2479,10 +2682,11 @@ server.listen(PORT, async () => {
   }
   console.log('======================================================\n');
 
-  // Synchronize users from persistent Supabase Cloud Storage
+  // Synchronize users and transfers from persistent Supabase Cloud Storage
   try {
     await loadUsersFromCloud();
+    await loadTransfersFromCloud();
   } catch (err) {
-    console.warn('[Startup] Cloud users sync warning:', err.message);
+    console.warn('[Startup] Cloud sync warning:', err.message);
   }
 });

@@ -3,6 +3,7 @@ package com.shareboxzen.app;
 import android.Manifest;
 import android.app.Activity;
 import android.app.DownloadManager;
+import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ContentResolver;
@@ -22,6 +23,7 @@ import android.provider.MediaStore;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
+import android.util.Log;
 import android.view.KeyEvent;
 import android.view.Window;
 import android.view.WindowManager;
@@ -208,9 +210,11 @@ public class MainActivity extends Activity implements DownloadListener {
         public void run() {
             try {
                 byte[] fileBytes = Base64.decode(base64Data, Base64.DEFAULT);
-                String cleanMime = (mimeType != null && !mimeType.isEmpty()) ? mimeType : "application/octet-stream";
+                String cleanMime = resolveMimeType(fileName, mimeType);
                 boolean isImage = cleanMime.startsWith("image/");
                 boolean isVideo = cleanMime.startsWith("video/");
+
+                Uri finalSavedUri = null;
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     ContentResolver resolver = activity.getContentResolver();
@@ -244,6 +248,7 @@ public class MainActivity extends Activity implements DownloadListener {
                         values.clear();
                         values.put(MediaStore.MediaColumns.IS_PENDING, 0);
                         resolver.update(savedUri, values, null, null);
+                        finalSavedUri = savedUri;
                     }
                 } else {
                     File targetDir;
@@ -264,6 +269,12 @@ public class MainActivity extends Activity implements DownloadListener {
                         fos.close();
                     }
                     MediaScannerConnection.scanFile(activity, new String[]{targetFile.getAbsolutePath()}, new String[]{cleanMime}, null);
+                    finalSavedUri = Uri.fromFile(targetFile);
+                }
+
+                if (finalSavedUri != null) {
+                    activity.setLastSavedFile(finalSavedUri, cleanMime, fileName);
+                    activity.openFile(finalSavedUri, cleanMime, fileName);
                 }
 
                 if (isImage || isVideo) {
@@ -316,6 +327,22 @@ public class MainActivity extends Activity implements DownloadListener {
                                 if (cursor.moveToFirst()) {
                                     int statusIdx = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS);
                                     if (statusIdx != -1 && cursor.getInt(statusIdx) == DownloadManager.STATUS_SUCCESSFUL) {
+                                        Uri downloadedUri = dm.getUriForDownloadedFile(downloadId);
+                                        String mime = dm.getMimeTypeForDownloadedFile(downloadId);
+                                        int titleIdx = cursor.getColumnIndex(DownloadManager.COLUMN_TITLE);
+                                        String title = titleIdx != -1 ? cursor.getString(titleIdx) : "File";
+
+                                        if (downloadedUri != null) {
+                                            Intent openIntent = new Intent(Intent.ACTION_VIEW);
+                                            openIntent.setDataAndType(downloadedUri, mime);
+                                            openIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                                            Intent chooser = Intent.createChooser(openIntent, "Open " + title);
+                                            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                            try {
+                                                context.startActivity(chooser);
+                                            } catch (Exception ignored) {}
+                                        }
+
                                         int uriIdx = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI);
                                         if (uriIdx != -1) {
                                             String localUriStr = cursor.getString(uriIdx);
@@ -323,7 +350,7 @@ public class MainActivity extends Activity implements DownloadListener {
                                                 Uri localUri = Uri.parse(localUriStr);
                                                 String filePath = localUri.getPath();
                                                 if (filePath != null) {
-                                                    MediaScannerConnection.scanFile(context, new String[]{filePath}, null, null);
+                                                    MediaScannerConnection.scanFile(context, new String[]{filePath}, new String[]{mime}, null);
                                                 }
                                             }
                                         }
@@ -335,6 +362,19 @@ public class MainActivity extends Activity implements DownloadListener {
                     } catch (Exception ignored) {}
                 }
             }
+        }
+    }
+
+    public static class OpenLastFileTask implements Runnable {
+        private final MainActivity activity;
+
+        public OpenLastFileTask(MainActivity activity) {
+            this.activity = activity;
+        }
+
+        @Override
+        public void run() {
+            activity.openLastSavedFile();
         }
     }
 
@@ -360,6 +400,11 @@ public class MainActivity extends Activity implements DownloadListener {
         public void downloadFileFromUrl(String url, String fileName, String mimeType, String authHeader) {
             if (url == null) return;
             activity.runOnUiThread(new DownloadUrlTask(activity, url, fileName, mimeType));
+        }
+
+        @JavascriptInterface
+        public void openLastSavedFile() {
+            activity.runOnUiThread(new OpenLastFileTask(activity));
         }
     }
 
@@ -524,6 +569,79 @@ public class MainActivity extends Activity implements DownloadListener {
         enqueueDownload(url, userAgent, contentDisposition, mimetype, null);
     }
 
+    private Uri lastSavedUri = null;
+    private String lastSavedMime = null;
+    private String lastSavedName = null;
+
+    public void setLastSavedFile(Uri uri, String mime, String name) {
+        this.lastSavedUri = uri;
+        this.lastSavedMime = mime;
+        this.lastSavedName = name;
+    }
+
+    public void openLastSavedFile() {
+        if (lastSavedUri != null && lastSavedMime != null) {
+            openFile(lastSavedUri, lastSavedMime, lastSavedName != null ? lastSavedName : "File");
+        } else {
+            Toast.makeText(this, "No recently saved file to open.", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    public void openFile(Uri fileUri, String mimeType, String fileName) {
+        if (fileUri == null) return;
+        try {
+            Intent viewIntent = new Intent(Intent.ACTION_VIEW);
+            viewIntent.setDataAndType(fileUri, mimeType);
+            viewIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            Intent chooser = Intent.createChooser(viewIntent, "Open " + (fileName != null ? fileName : "file"));
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(chooser);
+        } catch (ActivityNotFoundException e) {
+            Toast.makeText(this, "✓ File saved! Open with your file manager: " + fileName, Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            Log.e("ShareBoxZen", "Failed to launch viewer: " + e.getMessage());
+        }
+    }
+
+    public static String resolveMimeType(String fileName, String fallback) {
+        if (fileName == null) return (fallback != null && !fallback.isEmpty()) ? fallback : "application/octet-stream";
+        String lower = fileName.toLowerCase();
+        int dotIdx = lower.lastIndexOf('.');
+        if (dotIdx != -1) {
+            String ext = lower.substring(dotIdx + 1);
+            switch (ext) {
+                case "pdf": return "application/pdf";
+                case "doc": return "application/msword";
+                case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+                case "xls": return "application/vnd.ms-excel";
+                case "xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+                case "ppt": return "application/vnd.ms-powerpoint";
+                case "pptx": return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+                case "txt": return "text/plain";
+                case "csv": return "text/csv";
+                case "jpg":
+                case "jpeg": return "image/jpeg";
+                case "png": return "image/png";
+                case "gif": return "image/gif";
+                case "webp": return "image/webp";
+                case "svg": return "image/svg+xml";
+                case "bmp": return "image/bmp";
+                case "mp4": return "video/mp4";
+                case "mkv": return "video/x-matroska";
+                case "mov": return "video/quicktime";
+                case "avi": return "video/x-msvideo";
+                case "webm": return "video/webm";
+                case "mp3": return "audio/mpeg";
+                case "wav": return "audio/wav";
+                case "zip": return "application/zip";
+                case "rar": return "application/x-rar-compressed";
+                case "7z": return "application/x-7z-compressed";
+                case "apk": return "application/vnd.android.package-archive";
+            }
+        }
+        return (fallback != null && !fallback.isEmpty()) ? fallback : "application/octet-stream";
+    }
+
     public void enqueueDownload(String url, String userAgent, String contentDisposition, String mimetype, String customFileName) {
         try {
             String fileName = (customFileName != null && !customFileName.isEmpty())
@@ -531,7 +649,7 @@ public class MainActivity extends Activity implements DownloadListener {
                     : URLUtil.guessFileName(url, contentDisposition, mimetype);
 
             DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-            String cleanMime = (mimetype != null && !mimetype.isEmpty()) ? mimetype : "application/octet-stream";
+            String cleanMime = resolveMimeType(fileName, mimetype);
             request.setMimeType(cleanMime);
             if (userAgent != null && !userAgent.isEmpty()) request.addRequestHeader("User-Agent", userAgent);
 

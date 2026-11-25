@@ -2365,6 +2365,41 @@ function renderTransferHistoryCards() {
   });
 }
 
+function resolveClientMimeType(fileName, fallback = 'application/octet-stream') {
+  if (!fileName) return fallback;
+  const ext = fileName.toLowerCase().split('.').pop();
+  const map = {
+    pdf: 'application/pdf',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    txt: 'text/plain',
+    csv: 'text/csv',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    svg: 'image/svg+xml',
+    bmp: 'image/bmp',
+    mp4: 'video/mp4',
+    mkv: 'video/x-matroska',
+    mov: 'video/quicktime',
+    avi: 'video/x-msvideo',
+    webm: 'video/webm',
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    zip: 'application/zip',
+    rar: 'application/x-rar-compressed',
+    '7z': 'application/x-7z-compressed',
+    apk: 'application/vnd.android.package-archive'
+  };
+  return map[ext] || fallback;
+}
+
 async function executeFileDownload(id, password = null) {
   try {
     showToast('Preparing download & checking file status...', 'info');
@@ -2377,7 +2412,7 @@ async function executeFileDownload(id, password = null) {
     }
     const transfer = await metaRes.json();
     const fileName = transfer.fileName || 'downloaded_file';
-    const mimeType = transfer.fileType || 'application/octet-stream';
+    const mimeType = resolveClientMimeType(fileName, transfer.fileType || 'application/octet-stream');
     const isImageOrVideo = mimeType.startsWith('image/') || mimeType.startsWith('video/') ||
       /\.(jpg|jpeg|png|gif|webp|svg|bmp|mp4|mkv|mov|avi|webm)$/i.test(fileName);
 
@@ -2418,6 +2453,11 @@ async function executeFileDownload(id, password = null) {
         if (!fileRes.ok) {
           throw new Error(`Download request failed with status ${fileRes.status}`);
         }
+        const resContentType = (fileRes.headers.get('content-type') || '').toLowerCase();
+        if (resContentType.includes('application/json')) {
+          const jsonErr = await fileRes.json();
+          throw new Error(jsonErr.error || 'Server error during download.');
+        }
         const fileBlob = await fileRes.blob();
 
         // Android App: save directly into Gallery/Albums or Downloads via MediaStore bridge
@@ -2427,7 +2467,13 @@ async function executeFileDownload(id, password = null) {
             try {
               const base64 = reader.result.split(',')[1];
               window.ShareBoxAndroid.saveFileToDevice(base64, fileName, mimeType);
-              showToast(`✓ Saved to ${isImageOrVideo ? 'Albums/Gallery' : 'My Files'}: ${fileName}`, 'success');
+              const dest = isImageOrVideo ? 'Albums / Gallery' : 'My Files / Downloads';
+              showToast(`✓ Saved to ${dest}: ${fileName}`, 'success');
+              if (typeof window.ShareBoxAndroid.openLastSavedFile === 'function') {
+                setTimeout(() => {
+                  try { window.ShareBoxAndroid.openLastSavedFile(); } catch (e) {}
+                }, 600);
+              }
             } catch (saveErr) {
               console.error('Android native save error, falling back:', saveErr);
               window.ShareBoxAndroid.downloadFileFromUrl(absoluteDownloadUrl, fileName, mimeType, '');
@@ -2490,6 +2536,11 @@ async function executeFileDownload(id, password = null) {
       showToast('Download request failed.', 'error');
       return;
     }
+    const encContentType = (fileRes.headers.get('content-type') || '').toLowerCase();
+    if (encContentType.includes('application/json')) {
+      const jsonErr = await fileRes.json();
+      throw new Error(jsonErr.error || 'Server error during encrypted file download.');
+    }
 
     const cipherBuf = await fileRes.arrayBuffer();
     const cryptoKey = await ZenChunker.importKey(keyInput.trim());
@@ -2503,7 +2554,13 @@ async function executeFileDownload(id, password = null) {
         try {
           const base64 = reader.result.split(',')[1];
           window.ShareBoxAndroid.saveFileToDevice(base64, fileName, mimeType);
-          showToast(`✓ Saved to ${isImageOrVideo ? 'Albums/Gallery' : 'My Files'}: ${fileName}`, 'success');
+          const dest = isImageOrVideo ? 'Albums / Gallery' : 'My Files / Downloads';
+          showToast(`✓ Saved to ${dest}: ${fileName}`, 'success');
+          if (typeof window.ShareBoxAndroid.openLastSavedFile === 'function') {
+            setTimeout(() => {
+              try { window.ShareBoxAndroid.openLastSavedFile(); } catch (e) {}
+            }, 600);
+          }
         } catch (saveErr) {
           console.error('Android native save error:', saveErr);
         }
